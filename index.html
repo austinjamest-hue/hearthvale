@@ -66,6 +66,8 @@ input,textarea{background:#120e09;color:#f0e6cc;border:1px solid #8a7040;border-
 .saverow{padding:4px 0;border-bottom:1px solid #2a2016}.qs{background:#120e09;padding:1px 5px;border-radius:3px}
 table.help td{padding:4px 8px;border-bottom:1px solid #2a2016;vertical-align:top}table.help td:first-child{color:#ffd24a;white-space:nowrap}
 #bigmap{width:100%;max-width:720px;image-rendering:pixelated;display:block;margin:auto;border:1px solid #4a3a24}
+.quest{background:rgba(255,210,74,0.07);border:1px solid rgba(255,210,74,0.35);border-radius:6px;padding:8px 10px;margin:8px 0}
+.heart{color:#ff6a8a;letter-spacing:1px}
 </style></head><body>
 <canvas id="cv"></canvas>
 <div id="hud">
@@ -97,7 +99,7 @@ table.help td{padding:4px 8px;border-bottom:1px solid #2a2016;vertical-align:top
 // HEARTHVALE - tunable constants. Change numbers here to rebalance.
 // ============================================================
 const CFG = {
-  VERSION: '1.1.0',
+  VERSION: '1.2.0',
   TILE: 32,                 // pixels per tile
   WORLD_W: 240, WORLD_H: 240,
   SEED: 20261124,
@@ -132,6 +134,14 @@ const CFG = {
   PLAYER_SPEED: 150,        // px/sec
   NPC_COUNT: 26,
   INV_SLOTS: 40, BANK_SLOTS: 60,
+  // v1.2
+  BOSS_RESPAWN_DAYS: 3,     // in-game days a beaten boss stays down (then returns stronger)
+  RARE_CHANCE: 0.012,       // chance a world spawn is a named rare monster
+  GILDED_CHANCE: 0.003,     // chance of a fleeing Gilded Goblin
+  GATHER_SURPRISE: 0.012,   // chance gathering triggers an ambush or a lucky find
+  CACHE_REFILL_DAYS: 2,     // Blightmarsh caches refill after this many days
+  NPC_QUEST_MAX: 4,         // townsfolk favors you can hold at once
+  RECRUIT_AFFINITY: 60, RECRUIT_FAVORS: 3, PARTY_ENABLED: false, // groundwork for a future party system
 };
 
 // ===== 01_util.js =====
@@ -669,6 +679,175 @@ function compareHtml(it, cmp) {
   return `<div class="tt-cmp">vs equipped (${esc(cmp.name)}):<br>${rows.join('<br>')}</div>`;
 }
 
+// ===== 03b_content.js =====
+// ============================================================
+// v1.2 CONTENT TABLES: Blightmarsh, bosses, relic (boss-crafted) gear,
+// rare monsters, notes. Pure data + recipe generation; logic lives in
+// 06b_bosses.js and 07b_quests.js.
+// ============================================================
+// ---- new materials ----
+[['herb_blightcap', 'Blightcap', 3, '#9a6ad0', 30, 'A pale marsh mushroom. Alchemists prize it.'],
+ ['sap_amber', 'Bog Amber', 3, '#e0a030', 34, 'Hardened sap from the weeping bogwillows. Used in jewelry and relic gear.'],
+ ['shard_witchglass', 'Witchglass Shard', 3, '#7ad0c0', 38, 'Glassy stone that hums faintly. Used in staves, wands and relic gear.'],
+ ['fish_eel', 'Mire Eel', 3, '#5a7a4a', 26, 'A slippery marsh eel.'],
+ ['gland_toad', 'Toad Gland', 3, '#a0c040', 22, 'Taken from mire toads. Used in antidotes.'],
+ ['vine_rot', 'Rotvine', 3, '#6a5a30', 24, 'Tough marsh vine. Tailors weave it into leather.'],
+ ['essence_rare', 'Glimmering Essence', 2, '#ffe08a', 90, 'Dropped by rare monsters. Needed for most relic gear.'],
+ ['ember_shard', 'Ember Shard', 2, '#ff7a3a', 20, 'A warm crystal from the Emberdeep.'],
+ ['rime_shard', 'Rime Shard', 2, '#9ad8ff', 20, 'A freezing crystal from the Emberdeep.'],
+].forEach(([id, name, tier, color, value, desc]) => defItem(id, { name, tier, color, value, icon: id.startsWith('fish') ? 'fish' : id.startsWith('herb') ? 'herb' : 'mat', desc }));
+// boss trophies (special crafting materials)
+[['tusk_oldtusk', 'Old Tusk\'s Ivory', 0, '#f0e8c8', 'oldtusk'], ['heartwood_gnarl', 'Gnarlroot Heartwood', 1, '#a0702a', 'gnarlroot'],
+ ['rune_sentinel', 'Sentinel Runestone', 2, '#b0b8d0', 'sentinel'], ['core_kollgar', 'Kollgar\'s Twin Core', 2, '#ff9a6a', 'kollgar'], ['heart_rotmother', 'Rotmother\'s Heart', 3, '#7a3a8a', 'rotmother']]
+  .forEach(([id, name, tier, color]) => defItem(id, { name, tier, color, value: 100 + tier * 60, icon: 'mat', desc: 'A boss trophy. Used to craft relic gear.' }));
+ITEMS.relic_warden.desc = 'A cold iron relic from the Hollow Warden. A boss trophy used to craft relic gear.';
+// readable notes (hints). type 'note': click in the bag to read.
+const NOTES = {
+  note_rotmother: 'A cultist\'s scrawled note: "The Mother sleeps beneath the Sunken Altar, far south-east in the marsh. While her three idols drink from the bog, no blade or spell can touch her. Break the idols - they burn well - then strike before they sprout anew."',
+  note_emberdeep: 'A miner\'s torn page: "Kollgar wears two hearts, forge and frost. When he glows red, the cold hurts him. When he glows blue, give him flame. What he wears, he cannot feel. Bring both oils."',
+};
+for (const [id, text] of Object.entries(NOTES)) defItem(id, { name: id === 'note_rotmother' ? 'Scrawled Cultist Note' : 'Torn Miner\'s Page', type: 'note', stack: 5, value: 1, color: '#e8dcb0', icon: 'mat', text, desc: 'Click it in your bag to read it.' });
+// new consumables
+[['antidote', 'Bog Antidote', 40, '#a0e060', { cure: true, buff: { id: 'antidote', dur: 240, resistPoison: 0.5 } }, 'Cures poison and halves poison damage taken for 4 min.'],
+ ['eel_pie', 'Mire Eel Pie', 70, '#b09060', { heal: 450, buff: { id: 'fed', dur: 600, regen: 8, stats: { vit: 10, str: 4 } } }, 'Well Fed: +8 HP/s, +10 Vit, +4 Str for 10 min.'],
+].forEach(([id, name, value, color, use, desc]) => defItem(id, { name, value, color, type: 'consumable', use, icon: 'potion', stack: 20, desc }));
+defRecipe({ job: 'alchemist', station: 'alembic', rank: 31, inputs: [['gland_toad', 1], ['herb_blightcap', 1]], out: { item: 'antidote', qty: 2 }, xp: 44 });
+defRecipe({ job: 'cook', station: 'stove', rank: 31, inputs: [['fish_eel', 1], ['crop_wheat', 2], ['crop_carrot', 1]], out: { item: 'eel_pie', qty: 1 }, xp: 42 });
+defRecipe({ job: 'tailor', station: 'loom', rank: 32, inputs: [['vine_rot', 2], ['leather_drake', 1]], out: { item: 'leather_drake', qty: 2 }, xp: 40, time: 0.8 });
+defRecipe({ job: 'blacksmith', station: 'forge', rank: 33, inputs: [['bar_mithril', 2], ['sap_amber', 2], ['shard_witchglass', 1]], out: { equip: 'ring', ilvl: 33, tier: 3 }, xp: 70, time: 1.6 });
+defRecipe({ job: 'carpenter', station: 'workbench', rank: 34, inputs: [['plank_elder', 4], ['shard_witchglass', 3], ['ecto', 2]], out: { equip: 'staff', ilvl: 34, tier: 3 }, xp: 72, time: 1.6 });
+SHOPS.apothecary.stock.push('oil_frost');
+// marsh resource nodes (special, only in the Blightmarsh)
+const SPECIAL_NODES = {
+  blightcap: { kind: 'herb', job: 'herbalist', item: 'herb_blightcap', rank: 30, name: 'Blightcap Cluster', col: '#9a6ad0', charges: 4 },
+  bogwillow: { kind: 'tree', job: 'woodcutter', item: 'sap_amber', rank: 32, name: 'Weeping Bogwillow', col: '#5a6a3a', charges: 4 },
+  witchglass: { kind: 'ore', job: 'miner', item: 'shard_witchglass', rank: 33, name: 'Witchglass Outcrop', col: '#7ad0c0', charges: 4 },
+  eel: { kind: 'fish', job: 'fisher', item: 'fish_eel', rank: 30, name: 'Fishing Spot (Mire Eel)', col: '#5a7a4a', charges: 4 },
+};
+// ---- Blightmarsh monsters ----
+Object.assign(MONSTERS, {
+  mire_toad: { name: 'Mire Toad', type: 'beast', hp: 1.3, dmg: 1.2, speed: 80, size: 13, color: '#6a7a3a', shape: 'toad', ranged: { range: 230, speed: 300, color: '#a0e040', type: 'poison' }, drops: [['gland_toad', 0.55, 1, 2]], xp: 1.7, resist: { poison: 0.8, frost: -0.3 } },
+  shambler: { name: 'Rot Shambler', type: 'plant', hp: 2.2, dmg: 1.5, speed: 60, size: 16, color: '#5a5a2a', shape: 'treant', drops: [['vine_rot', 0.6, 1, 2]], xp: 2.0, regen: 0.012, resist: { physical: 0.2, poison: 0.9, fire: -0.5 } },
+  wisp: { name: 'Marsh Wisp', type: 'elemental', hp: 0.8, dmg: 1.3, speed: 125, size: 10, color: '#c0ffb0', shape: 'wisp', ranged: { range: 280, speed: 360, color: '#d0ffc0', type: 'arcane' }, drops: [['ecto', 0.4, 1, 1]], xp: 1.8, night: true, resist: { physical: 0.5, arcane: 0.6, holy: -0.4 } },
+  // boss minions
+  blight_totem: { name: 'Blight Idol', type: 'plant', hp: 2.6, dmg: 0.6, speed: 0, size: 14, color: '#6a3a6a', shape: 'totem', drops: [], xp: 0.5, stationary: true, totem: true, resist: { poison: 1, fire: -0.6, holy: -0.4 } },
+  ember_imp: { name: 'Cinder Imp', type: 'elemental', hp: 0.9, dmg: 1.2, speed: 115, size: 10, color: '#ff7a3a', shape: 'imp', ranged: { range: 250, speed: 340, color: '#ff8a3d', type: 'fire' }, drops: [['ember_shard', 0.55, 1, 2]], xp: 1.6, resist: { fire: 0.95, frost: -0.6 }, mine: true },
+  rime_wisp: { name: 'Rime Wisp', type: 'elemental', hp: 0.9, dmg: 1.1, speed: 110, size: 10, color: '#9ad8ff', shape: 'wisp', ranged: { range: 260, speed: 340, color: '#bfe8ff', type: 'frost' }, drops: [['rime_shard', 0.55, 1, 2]], xp: 1.6, resist: { frost: 0.95, fire: -0.6 }, mine: true },
+  mine_golem: { name: 'Slag Golem', type: 'elemental', hp: 2.2, dmg: 1.35, speed: 65, size: 16, color: '#6a5a4a', shape: 'golem', drops: [['core_golem', 0.4, 1, 1], ['ore_silver', 0.5, 1, 2]], xp: 2.0, resist: { physical: 0.45, fire: 0.3, frost: -0.3 }, mine: true },
+  // surprises
+  gilded_goblin: { name: 'Gilded Goblin', type: 'humanoid', hp: 1.6, dmg: 0.4, speed: 150, size: 11, color: '#e8c040', shape: 'humanoid', drops: [['essence_rare', 0.6, 1, 1]], xp: 2.5, gold: 25, passive: true, flees: true },
+  mimic: { name: 'Mimic', type: 'beast', hp: 2.4, dmg: 1.6, speed: 105, size: 15, color: '#8a5a2a', shape: 'mimic', drops: [['essence_rare', 1, 1, 2]], xp: 3, gold: 12 },
+  // ---- bosses (ai picks the mechanic in 06b_bosses.js) ----
+  oldtusk: { name: 'Old Tusk, the Boar King', type: 'beast', boss: true, ai: 'oldtusk', hp: 30, dmg: 1.6, speed: 95, size: 26, color: '#5a3a26', shape: 'boar', drops: [['hide_boar', 1, 3, 6], ['meat_raw', 1, 2, 4]], xp: 18, gold: 20, resist: { physical: 0.45, fire: -0.3 } },
+  gnarlroot: { name: 'Gnarlroot, the Elder Treant', type: 'plant', boss: true, ai: 'gnarlroot', hp: 34, dmg: 1.6, speed: 55, size: 30, color: '#3a5a20', shape: 'treant', drops: [['bark_living', 1, 3, 6], ['log_oak', 1, 3, 6]], xp: 22, gold: 25, resist: { physical: 0.2, frost: 0.3, poison: 0.6, fire: -0.5 } },
+  sentinel: { name: 'The Granite Sentinel', type: 'elemental', boss: true, ai: 'sentinel', hp: 36, dmg: 1.7, speed: 60, size: 28, color: '#8a8478', shape: 'golem', drops: [['core_golem', 1, 2, 4], ['ore_silver', 1, 3, 6]], xp: 26, gold: 30, resist: { physical: 0.8, fire: 0.5, holy: 0.5, arcane: 0.5, poison: 1, frost: 0 } },
+  kollgar: { name: 'Kollgar the Forge-Bound', type: 'elemental', boss: true, ai: 'kollgar', hp: 38, dmg: 1.75, speed: 70, size: 28, color: '#ff6a2a', shape: 'golem', drops: [['ember_shard', 1, 3, 5], ['rime_shard', 1, 3, 5], ['bar_silver', 1, 2, 4]], xp: 28, gold: 35, resist: { physical: 0.35, fire: 0.9, frost: -0.6 } },
+  rotmother: { name: 'The Rotmother', type: 'plant', boss: true, ai: 'rotmother', hp: 40, dmg: 1.8, speed: 65, size: 28, color: '#5a3a5a', shape: 'hag', drops: [['vine_rot', 1, 3, 6], ['herb_blightcap', 1, 2, 4], ['gland_toad', 1, 2, 3]], xp: 32, gold: 45, resist: { poison: 0.9, physical: 0.1, fire: -0.2 } },
+});
+MONSTERS.warden.ai = 'warden';
+MONSTERS.cultist.drops.push(['note_rotmother', 0.1, 1, 1]);
+const MARSH = ZONES.find(z => z.id === 'wastes');
+MARSH.monsters = ['lurker', 'drake', 'cultist', 'mire_toad', 'mire_toad', 'shambler', 'cultist'];
+MARSH.night = ['wraith', 'wisp'];
+MARSH.desc = 'Ashen Blightmarsh: toads, shamblers and cultists. Bring antidotes.';
+// extra loot any monster in a zone can drop (zone loot tables)
+const ZONE_LOOT = {
+  meadow: [['herb_meadowleaf', 0.03, 1, 1]],
+  forest: [['herb_sunpetal', 0.025, 1, 1]],
+  highlands: [['herb_frostcap', 0.025, 1, 1], ['ore_silver', 0.02, 1, 1]],
+  wastes: [['herb_blightcap', 0.05, 1, 1], ['sap_amber', 0.025, 1, 1], ['potion_hp3', 0.03, 1, 1], ['essence_rare', 0.004, 1, 1]],
+};
+const ZONE_EQUIP_MULT = { wastes: 1.3, highlands: 1.1 };
+
+// ---- boss registry: where each boss lives, its trophy, hints ----
+// lair bosses spawn at a world POI; dungeon bosses inside their dungeon.
+const BOSSES = {
+  oldtusk:  { mon: 'oldtusk', level: 8, where: 'lair', poi: 'tusk_lair', trophy: 'tusk_oldtusk', zone: 'Sunmeadow' },
+  warden:   { mon: 'warden', level: 15, where: 'crypt', poi: 'crypt', trophy: 'relic_warden', zone: 'Hollow Crypt' },
+  gnarlroot:{ mon: 'gnarlroot', level: 15, where: 'lair', poi: 'gnarl_lair', trophy: 'heartwood_gnarl', zone: 'Greenwood' },
+  sentinel: { mon: 'sentinel', level: 22, where: 'lair', poi: 'sentinel_lair', trophy: 'rune_sentinel', zone: 'Greyridge Highlands' },
+  kollgar:  { mon: 'kollgar', level: 24, where: 'emberdeep', poi: 'emberdeep', trophy: 'core_kollgar', zone: 'Emberdeep Mine' },
+  rotmother:{ mon: 'rotmother', level: 30, where: 'lair', poi: 'rot_lair', trophy: 'heart_rotmother', zone: 'Ashen Blightmarsh' },
+};
+
+// ---- rare monsters ----
+const RARE_EPITHETS = ['Grimjaw', 'Old Scar', 'Mossback', 'Nightfang', 'Rattlebone', 'Ironhide', 'Bloodeye', 'Gutripper', 'Ashmane', 'Thornhide', 'Gloomtooth', 'Skulk', 'Rotgut', 'Brightscale', 'Hollowcry', 'Wretch'];
+const RARE_MODS = {
+  fiery:    { name: 'Fiery', desc: 'hits also burn' },
+  frozen:   { name: 'Frozen', desc: 'hits chill you (slow)' },
+  vampiric: { name: 'Vampiric', desc: 'heals when it hits' },
+  swift:    { name: 'Swift', desc: 'fast and frantic' },
+  stoneskin:{ name: 'Stoneskin', desc: 'resists physical damage' },
+  splitter: { name: 'Splitter', desc: 'splits apart when killed' },
+};
+
+// ---- relic gear: boss trophy recipes. These out-level anything that drops near the boss,
+// so crafting stays the way forward. ----
+const RELIC_SETS = [
+  { id: 'tusk', boss: 'oldtusk', prefix: 'Tuskbound', trophy: 'tusk_oldtusk', ilvl: 12, tier: 0, rank: 8, essence: 0, sig: 'hp', extra: 'hide_boar' },
+  { id: 'warden', boss: 'warden', prefix: 'Wardensteel', trophy: 'relic_warden', ilvl: 19, tier: 1, rank: 15, essence: 0, sig: 'holyPct', extra: 'dust_bone' },
+  { id: 'gnarl', boss: 'gnarlroot', prefix: 'Heartwood', trophy: 'heartwood_gnarl', ilvl: 21, tier: 1, rank: 18, essence: 1, sig: 'regen', extra: 'bark_living' },
+  { id: 'sentinel', boss: 'sentinel', prefix: 'Runecarved', trophy: 'rune_sentinel', ilvl: 27, tier: 2, rank: 24, essence: 1, sig: 'def', extra: 'core_golem' },
+  { id: 'kollgar', boss: 'kollgar', prefix: 'Forgebound', trophy: 'core_kollgar', ilvl: 31, tier: 2, rank: 28, essence: 1, sig: 'firePct', sig2: 'frostPct', extra: 'ember_shard' },
+  { id: 'rot', boss: 'rotmother', prefix: 'Blightward', trophy: 'heart_rotmother', ilvl: 37, tier: 3, rank: 34, essence: 2, sig: 'vit', extra: 'vine_rot', marsh: true },
+];
+const RELIC_BY_ID = {}; RELIC_SETS.forEach(s => RELIC_BY_ID[s.id] = s);
+RELIC_SETS.forEach(s => {
+  const t = TIERS[s.tier], bar = 'bar_' + t.ore, plank = 'plank_' + t.wood, cloth = CLOTH_IDS[s.tier], leather = LEATHER_IDS[s.tier];
+  const ess = s.essence ? [['essence_rare', s.essence]] : [];
+  const mk = (job, station, base, main, mq, troph, more = [], ro = 0) => defRecipe({ job, station, rank: s.rank + ro, inputs: [[main, mq], [s.trophy, troph], [s.extra, 2], ...ess, ...more], out: { equip: base, ilvl: s.ilvl, tier: s.tier, relic: s.id, minQ: 1 }, xp: 30 + s.ilvl * 3, time: 2 });
+  const jewel = s.marsh ? [['sap_amber', 2]] : [['herb_' + t.herb, 2]], glass = s.marsh ? [['shard_witchglass', 2]] : [];
+  mk('blacksmith', 'forge', 'sword', bar, 5, 2, [[plank, 1]]); mk('blacksmith', 'forge', 'axe', bar, 6, 2, [[plank, 1]], 1);
+  mk('blacksmith', 'forge', 'dagger', bar, 4, 2, [[plank, 1]]); mk('blacksmith', 'forge', 'mace', bar, 5, 2, [[plank, 1]], 1);
+  mk('blacksmith', 'forge', 'plate_chest', bar, 7, 2, [], 2); mk('blacksmith', 'forge', 'amulet', bar, 3, 1, jewel, 2);
+  mk('carpenter', 'workbench', 'bow', plank, 5, 2, [[bar, 1]]); mk('carpenter', 'workbench', 'staff', plank, 5, 2, [[bar, 1], ...glass], 1); mk('carpenter', 'workbench', 'wand', plank, 4, 2, [[bar, 1], ...glass]);
+  mk('tailor', 'loom', 'leather_chest', leather, 6, 2, s.marsh ? [['vine_rot', 2]] : [], 1); mk('tailor', 'loom', 'cloth_chest', cloth, 6, 2, [], 1); mk('tailor', 'loom', 'tome', cloth, 4, 1, [[leather, 1]], 2);
+});
+// relic gear: a crafted item with a boss trophy's signature bonus
+function applyRelic(it, setId) {
+  const s = RELIC_BY_ID[setId]; if (!s) return it; const b = EQUIP_BASES[it.base];
+  it.relic = setId;
+  if (it.dmg) it.dmg = it.dmg.map(v => Math.round(v * 1.12)); if (it.def) it.def = Math.round(it.def * 1.12);
+  for (const k of [s.sig, s.sig2].filter(Boolean)) { const v = AFFIXES[k].roll(it.ilvl) * 1.3; it.stats[k] = +((it.stats[k] || 0) + (v < 1 ? +v.toFixed(3) : Math.round(v))).toFixed(3); }
+  it.name = (it.quality >= 2 ? QUALITIES[it.quality].name + ' ' : '') + s.prefix + ' ' + b.name;
+  it.value = Math.round(it.value * 1.6); it.maxDur = Math.round(it.maxDur * 1.2); it.dur = it.maxDur;
+  return it;
+}
+// what a finished recipe produces (used by crafting and the recipe preview)
+function craftEquipOut(r, q) {
+  const it = genEquip(r.out.equip, r.out.ilvl, { quality: Math.max(q, r.out.minQ || 0), tier: r.out.tier });
+  return r.out.relic ? applyRelic(it, r.out.relic) : it;
+}
+// gear that suits each class (boss drops pick from here)
+const CLASS_GEAR = {
+  warrior: ['sword', 'axe', 'mace', 'shield', 'plate_head', 'plate_chest', 'plate_legs', 'plate_hands', 'plate_feet', 'ring', 'amulet'],
+  ranger: ['bow', 'leather_head', 'leather_chest', 'leather_legs', 'leather_hands', 'leather_feet', 'ring', 'amulet'],
+  mage: ['staff', 'wand', 'tome', 'cloth_head', 'cloth_chest', 'cloth_legs', 'cloth_hands', 'cloth_feet', 'ring', 'amulet'],
+  cleric: ['mace', 'wand', 'tome', 'shield', 'cloth_chest', 'plate_chest', 'cloth_head', 'plate_head', 'ring', 'amulet'],
+  rogue: ['dagger', 'leather_head', 'leather_chest', 'leather_legs', 'leather_hands', 'leather_feet', 'ring', 'amulet'],
+};
+function classGearBase(P) {
+  if (CLASS_GEAR[P.cls]) return pick(CLASS_GEAR[P.cls]);
+  const s = P.wpn ? P.wpn.stat : 'str'; return pick(s === 'dex' ? CLASS_GEAR.rogue : s === 'int' ? CLASS_GEAR.mage : CLASS_GEAR.warrior);
+}
+
+// ---- hint lines for townsfolk + new rumors ----
+NPC_LINES.hunter.push('Old Tusk turns blades like a door. Let him charge past you into the standing stones. He knocks himself silly.', 'There\'s a great boar in Tusker Hollow, south-west. Torches scare him too.');
+NPC_LINES.woodcutter.push('Gnarlroot heals as fast as you cut it. Keep it burning and the wood can\'t knit.', 'Fire oil from the Apothecary. Don\'t go to Gnarlroot Grove without it.');
+NPC_LINES.miner.push('Stone that\'s frozen goes brittle. Hit it with frost first, then swing.', 'Old prospectors say a stone giant guards ruins far to the south.', 'There\'s an old mine in the far west. Emberdeep. Burns and freezes all at once, they say.');
+NPC_LINES.priest.push('The marsh cultists pray to a "Mother". Her idols must be broken before she can be harmed.', 'If you go to the Blightmarsh, take antidotes. The rot gets in your blood.');
+NPC_LINES.herbalist.push('Blightcap only grows in the far marsh. Pale and purple. Smells awful.', 'Antidotes need a toad gland and a blightcap.');
+NPC_LINES.blacksmith.push('Boss trophies make the best gear there is. Relic gear. Nothing you find lying around comes close.', 'Kollgar\'s forge burns hot, then freezes. Bring fire AND frost oil.');
+NPC_LINES.fisher.push('Mire eels bite in the marsh pools. Make a fine pie.');
+NPC_LINES.elder.push('Bosses you beat stay beaten for a while. But evil returns, stronger, after a few days.');
+RUMORS.push(
+  'A giant boar, Old Tusk, rules Tusker Hollow in the south-west meadow. The hunters know his weakness.',
+  'Gnarlroot, an ancient treant, broods in a grove in the western Greenwood. Woodcutters fear it.',
+  'Ruins guarded by a stone Sentinel lie far to the south in the Greyridge. Miners know how to crack stone.',
+  'Emberdeep, an old mine in the far west of the Greyridge, has woken. Something burns and freezes down there.',
+  'Cultists in the far south-east Blightmarsh worship a "Rotmother" at a sunken altar.',
+);
+
 // ===== 04_world.js =====
 // ---------- tiles ----------
 const T = { GRASS: 0, PATH: 1, WATER: 2, WALL: 3, SAND: 5, TREE: 6, ROCK: 7, PALISADE: 8, FLOOR: 9, CFLOOR: 10, CWALL: 11, FARM: 12, DOCK: 13, MUD: 14, COBBLE: 15, VOID: 16, DEEP: 17 };
@@ -780,7 +959,15 @@ function genOverworld() {
   for (const [id, p] of Object.entries(POI_DEFS)) {
     const px = cx + p.dx, py = cy + p.dy;
     for (let y = py - 6; y <= py + 6; y++) for (let x = px - 7; x <= px + 7; x++) { if (dist(x, y, px, py) < 6.5) { const t = m.tile(x, y); if (t !== T.PATH && t !== T.DOCK && t !== T.WATER && t !== T.DEEP) m.set(x, y, T.GRASS); } }
-    m.pois[id] = { id, x: px, y: py, name: p.name };
+    m.pois[id] = { id, x: px, y: py, name: p.name, lair: p.lair, dungeon: p.dungeon };
+    if (p.lair) { buildLair(m, id, p, px, py); m.addObj({ type: 'sign', x: px + 2, y: py + 8, solid: true, name: 'Weathered Sign', text: p.sign }); continue; }
+    if (p.dungeon && p.dungeon !== 'crypt') {
+      for (let y = py - 1; y <= py + 1; y++) for (let x = px - 2; x <= px + 2; x++) m.set(x, y, T.ROCK);
+      m.set(px, py + 1, T.PATH); m.set(px, py + 2, T.PATH);
+      m.addObj({ type: 'portal', x: px, y: py, to: p.dungeon, name: p.name + ' (entrance)', solid: true, desc: p.desc });
+      m.addObj({ type: 'sign', x: px + 2, y: py + 2, solid: true, name: 'Chalked Warning', text: p.sign });
+      continue;
+    }
     if (p.dungeon) {
       for (let y = py - 1; y <= py + 1; y++) for (let x = px - 2; x <= px + 2; x++) m.set(x, y, T.ROCK);
       m.set(px, py + 1, T.PATH);
@@ -818,7 +1005,7 @@ function genOverworld() {
   }
   // guarantee minnow spots at the dock
   const dp = m.pois.dock; for (let k = 0; k < 3; k++) { const x = dp.x + 8, y = dp.y - 1 + k * 1; if (!m.objAt(x, y)) { m.set(x, y, T.WATER); m.addObj(makeNode('fish', 0, x, y)); } }
-  // road lamps
+  populateMarsh(m);
   return m;
 }
 function makeNode(kind, tier, x, y) {
@@ -913,6 +1100,97 @@ function genCrypt(seed) {
   return m;
 }
 
+// ===== 04b_dungeons.js =====
+// ---------- v1.2: Emberdeep Mine, boss lairs, marsh caches ----------
+T.LAVA = 18; T.MFLOOR = 19; T.MWALL = 20;
+TILE_DEF[T.LAVA] = { solid: 1, color: '#c0401a', see: true }; TILE_DEF[T.MFLOOR] = { solid: 0, color: '#5a4636' }; TILE_DEF[T.MWALL] = { solid: 1, color: '#2a2018' };
+// new world places (offsets from town centre, in tiles)
+Object.assign(POI_DEFS, {
+  tusk_lair:     { name: 'Tusker Hollow', dx: -28, dy: 30, lair: 'oldtusk', sign: 'A hunter\'s carved post: "OLD TUSK. Blades bounce off his hide. Don\'t trade blows. Stand before a standing stone and let him charge - he\'ll crack his skull on it, and THEN he bleeds. Torches help too."' },
+  gnarl_lair:    { name: 'Gnarlroot Grove', dx: -62, dy: -22, lair: 'gnarlroot', sign: 'Hewer Bram\'s warning, nailed to a stump: "GNARLROOT heals as fast as you cut. Fire stops it knitting. Keep it burning - fire oil or flame - or don\'t bother. Mind the roots under your feet."' },
+  sentinel_lair: { name: 'Sentinel Ruins', dx: -16, dy: 95, lair: 'sentinel', sign: 'A prospector\'s last notes: "The Sentinel is living granite - steel, fire and prayer all slide off. But I saw frost crack it like a winter boulder, and for a moment my pick bit deep. Frost first, then strike. Run from the trembling ground."' },
+  emberdeep:     { name: 'Emberdeep Mine', dx: -96, dy: 12, dungeon: 'emberdeep', desc: 'Recommended level 21+. Heat and frost pour from the shaft.', sign: 'Chalked on the mine door: "SEALED. The imps laugh at fire, the wisps at frost. Kollgar wears both. Hit each with what it is NOT wearing. Bring fire oil AND frost oil."' },
+  rot_lair:      { name: 'Sunken Altar', dx: 90, dy: 88, lair: 'rotmother', sign: 'Scratched on a sunken stone: "Three idols feed the Mother. While one stands, she cannot be hurt. Break them - they burn - and strike quickly before they grow back."' },
+});
+POI_DEFS.crypt.dungeon = 'crypt';
+// build a boss lair clearing with features the fight uses
+function buildLair(m, id, p, px, py) {
+  const R = 10, S = CFG.SEED;
+  for (let y = py - R; y <= py + R; y++) for (let x = px - R; x <= px + R; x++) { if (dist(x, y, px, py) > R) continue; const t = m.tile(x, y); if (t !== T.PATH) m.set(x, y, p.lair === 'rotmother' ? (hash2(x, y, S + 5) < 0.4 ? T.MUD : T.GRASS) : T.GRASS); }
+  if (p.lair === 'oldtusk') for (let k = 0; k < 7; k++) { const a = k / 7 * Math.PI * 2 + 0.3; m.set(Math.round(px + Math.cos(a) * 5), Math.round(py + Math.sin(a) * 5), T.ROCK); }
+  if (p.lair === 'gnarlroot') for (let k = 0; k < 12; k++) { const a = k / 12 * Math.PI * 2; m.set(Math.round(px + Math.cos(a) * 9), Math.round(py + Math.sin(a) * 9), T.TREE); }
+  if (p.lair === 'sentinel') { for (let y = py - 4; y <= py + 4; y++) for (let x = px - 4; x <= px + 4; x++) m.set(x, y, T.COBBLE); for (let k = 0; k < 8; k++) { const a = k / 8 * Math.PI * 2; if (k % 2) m.set(Math.round(px + Math.cos(a) * 7), Math.round(py + Math.sin(a) * 7), T.ROCK); } }
+  if (p.lair === 'rotmother') { for (let k = 0; k < 5; k++) { const a = k / 5 * Math.PI * 2 + 0.6; const wx = Math.round(px + Math.cos(a) * 8), wy = Math.round(py + Math.sin(a) * 8); m.set(wx, wy, T.WATER); m.set(wx + 1, wy, T.WATER); } }
+  m.set(px, py + R + 1, T.PATH);
+}
+// scatter Blightmarsh caches and special resource nodes (deterministic)
+function populateMarsh(m) {
+  const S = CFG.SEED, caches = []; const near = (x, y, r) => Object.values(m.pois).some(p => dist(p.x, p.y, x, y) < r);
+  for (let y = 5; y < m.h - 5; y++) for (let x = 5; x < m.w - 5; x++) {
+    const z = ZONES[m.zone[m.idx(x, y)]]; if (z.id !== 'wastes' || m.solidAt(x, y) || m.objAt(x, y) || m.tile(x, y) === T.PATH) continue;
+    const r = hash2(x, y, S + 401);
+    if (r < 0.0012 && caches.length < 10 && !near(x, y, 12) && caches.every(c => dist(c.x, c.y, x, y) > 22)) { const o = m.addObj({ type: 'chest', cache: true, key: x + ',' + y, x, y, name: 'Bog-sunk Cache', solid: true, opened: false }); caches.push(o); continue; }
+    if (r > 0.995 && !near(x, y, 7)) { const k = hash2(x, y, S + 402) < 0.4 ? 'blightcap' : hash2(x, y, S + 403) < 0.5 ? 'bogwillow' : 'witchglass'; m.addObj(makeSpecialNode(k, x, y)); }
+  }
+  for (let y = 5; y < m.h - 5; y++) for (let x = 5; x < m.w - 5; x++) { // eel spots
+    if (m.tile(x, y) !== T.WATER || m.objAt(x, y) || ZONES[m.zone[m.idx(x, y)]].id !== 'wastes') continue;
+    let land = false; for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (!TILE_DEF[m.tile(x + a, y + b)].solid) land = true;
+    if (land && hash2(x, y, S + 404) < 0.05) m.addObj(makeSpecialNode('eel', x, y));
+  }
+  m.caches = caches;
+}
+function makeSpecialNode(key, x, y) {
+  const d = SPECIAL_NODES[key];
+  return { type: 'node', kind: d.kind, tier: 3, special: key, col: d.col, x, y, job: d.job, item: d.item, rank: d.rank, name: d.name, solid: d.kind === 'ore' || d.kind === 'tree', charges: d.charges, maxCharges: d.charges, respawn: 0, night: false };
+}
+// ---------- Emberdeep Mine: rooms chained top-left to bottom-right, lava pockets ----------
+function genEmberdeep(seed) {
+  const W = 90, H = 80, m = new GameMap('emberdeep', W, H); m.dark = true; m.name = 'Emberdeep Mine'; m.fixedLevel = 21;
+  const r = mulberry32(seed); const ri = (a, b) => a + Math.floor(r() * (b - a + 1));
+  m.tiles.fill(T.MWALL); m.zone.fill(3); for (let i = 0; i < m.var.length; i++) m.var[i] = (r() * 255) | 0;
+  const carve = (x, y, w, h) => { for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) m.set(xx, yy, T.MFLOOR); };
+  const rooms = []; let x = 3, y = 4; const N = 7;
+  for (let k = 0; k < N; k++) {
+    const boss = k === N - 1; const w = boss ? 20 : ri(9, 12), h = boss ? 16 : ri(8, 10);
+    if (boss) { x = Math.min(x, W - w - 3); y = Math.min(y, H - h - 3); }
+    carve(x, y, w, h); rooms.push({ x, y, w, h, cx: x + (w >> 1), cy: y + (h >> 1), boss });
+    if (k % 2 === 0) x += w + ri(3, 5); else y += h + ri(3, 4);
+    x = Math.min(x, W - 16); y = Math.min(y, H - 14);
+  }
+  for (let k = 1; k < rooms.length; k++) { const a = rooms[k - 1], b = rooms[k];
+    for (let xx = Math.min(a.cx, b.cx); xx <= Math.max(a.cx, b.cx); xx++) for (let w = -1; w <= 0; w++) if (m.tile(xx, a.cy + w) === T.MWALL) m.set(xx, a.cy + w, T.MFLOOR);
+    for (let yy = Math.min(a.cy, b.cy); yy <= Math.max(a.cy, b.cy); yy++) for (let w = 0; w <= 1; w++) if (m.tile(b.cx - 1 + w, yy) === T.MWALL) m.set(b.cx - 1 + w, yy, T.MFLOOR); }
+  // lava pockets (block walking, light the room, projectiles fly over)
+  rooms.forEach((rm, k) => { if (k === 0) return; const pockets = rm.boss ? [[rm.x + 2, rm.y + 2], [rm.x + rm.w - 4, rm.y + 2], [rm.x + 2, rm.y + rm.h - 4], [rm.x + rm.w - 4, rm.y + rm.h - 4]] : (r() < 0.7 ? [[rm.x + 2 + ri(0, rm.w - 6), rm.y + 2 + ri(0, rm.h - 6)]] : []);
+    for (const [lx, ly] of pockets) { for (let yy = ly; yy < ly + 2; yy++) for (let xx = lx; xx < lx + 2; xx++) if (dist(xx, yy, rm.cx, rm.cy) > 2.5) m.set(xx, yy, T.LAVA); m.lights.push({ x: (lx + 1) * CFG.TILE, y: (ly + 1) * CFG.TILE, r: 160, torch: true }); } });
+  m.rooms = rooms; const first = rooms[0];
+  m.spawn = { x: first.x + 2.5, y: first.cy + 0.5 };
+  m.addObj({ type: 'portal', x: first.x, y: first.cy - 2, to: 'world', name: 'Shaft up to the Greyridge', solid: true });
+  m.addObj({ type: 'sign', x: first.x + 3, y: first.y + 1, solid: true, name: 'Foreman\'s Log', text: 'The last page of the foreman\'s log: "Kollgar woke when we broke into the old forge-hall. He wears two hearts - the forge and the frost - and swaps them every little while. Red glow: the cold hurts him, flame does nothing. Blue glow: flame hurts him, cold does nothing. Watch his colour, and swap your oil to match. When he burns, the floor erupts. When he freezes, get away from him."' });
+  for (const rm of rooms) m.lights.push({ x: (rm.cx + 0.5) * CFG.TILE, y: (rm.y + 1) * CFG.TILE, r: 200, torch: true });
+  for (let k = 1; k < rooms.length - 1; k++) { const rm = rooms[k]; if (r() < 0.6) m.addObj({ type: 'chest', x: rm.x + 1, y: rm.y + 1, name: 'Miner\'s Strongbox', solid: true, opened: false, ilvl: 22 }); }
+  return m;
+}
+function populateEmberdeep(m) {
+  const rooms = m.rooms;
+  for (let k = 1; k < rooms.length - 1; k++) { const rm = rooms[k]; const n = randi(3, 5) + (k > 3 ? 1 : 0);
+    // early rooms teach one element at a time; later rooms mix
+    const pool = k === 1 ? ['ember_imp', 'ember_imp', 'mine_golem'] : k === 2 ? ['rime_wisp', 'rime_wisp', 'mine_golem'] : ['ember_imp', 'rime_wisp', 'mine_golem'];
+    for (let j = 0; j < n; j++) { const x = (rm.x + 1.5 + rand() * (rm.w - 3)) * CFG.TILE, y = (rm.y + 1.5 + rand() * (rm.h - 3)) * CFG.TILE; if (!m.solidPx(x, y)) m.monsters.push(makeMonster(pick(pool), 19 + Math.floor(k / 2) + randi(0, 1), x, y)); } }
+  placeDungeonBoss(m, 'kollgar');
+}
+// boss room: the boss if it is due, otherwise an empty hall with the way out
+function placeDungeonBoss(m, id) {
+  const br = m.rooms[m.rooms.length - 1];
+  if (bossAvailable(id)) spawnBoss(m, id, (br.cx + 0.5) * CFG.TILE, (br.cy + 0.5) * CFG.TILE, { room: br });
+  else { m.addObj({ type: 'portal', boss: true, x: br.cx, y: br.y + 1, to: 'world', name: 'Way out', solid: true });
+    m.addObj({ type: 'sign', x: br.cx + 2, y: br.cy, solid: true, name: 'Empty Hall', text: `${MONSTERS[BOSSES[id].mon].name} is gone for now. (${bossStatusText(id)})` }); }
+}
+const DUNGEONS = {
+  crypt: { name: 'Hollow Crypt', gen: s => genCrypt(s), populate: m => populateCrypt(m), minLevel: 10, rec: 12, enter: 'You descend into the Hollow Crypt. The air is cold and still.' },
+  emberdeep: { name: 'Emberdeep Mine', gen: s => genEmberdeep(s), populate: m => populateEmberdeep(m), minLevel: 17, rec: 21, enter: 'You climb down into Emberdeep. Heat and frost swirl through the tunnels.' },
+};
+
 // ===== 05_player.js =====
 // ---------- player ----------
 function xpToNext(l) { return Math.round(CFG.XP_BASE * Math.pow(l, CFG.XP_EXP)); }
@@ -999,6 +1277,7 @@ function useConsumable(P, id) {
   const u = d.use;
   if (u.heal && P.hp >= P.maxHp && !u.buff && !u.mana) { log('Already at full life.', 'dim'); return false; }
   invRemove(P.inv, id, 1);
+  if (u.cure && P.poison) { P.poison = null; addText(P.x, P.y - 44, 'Cured', '#a0e060', 12); }
   if (u.heal) { P.hp = Math.min(P.maxHp, P.hp + u.heal); addText(P.x, P.y - 30, '+' + u.heal, '#5f5', 14); }
   if (u.mana) { P.mana = Math.min(P.maxMana, P.mana + u.mana); addText(P.x, P.y - 30, '+' + u.mana, '#6af', 14); }
   if (u.buff) addBuff(P, u.buff);
@@ -1062,14 +1341,16 @@ function playerStrike(mo, mult, type, opts = {}) {
 }
 function hitMonster(mo, amount, type, o = {}) {
   if (mo.dead) return;
-  const res = (mo.def.resist && mo.def.resist[type]) || 0;
-  let a = amount * (1 - res);
+  if (mo.shielded) { if (!o.small) addText(mo.x, mo.y - mo.size - 10, 'Shielded!', '#c89bff', 12); mo.lastHitBy = 'player'; return; }
+  const R = mo.resist || mo.def.resist; const res = (R && R[type]) || 0;
+  let a = amount * (1 - res); if (mo.dazed > 0) a *= 2;
   if (type === 'physical') a *= 100 / (100 + mo.armor);
   a = Math.max(1, Math.round(a));
   mo.hp -= a; mo.hitFlash = 0.12; mo.lastHitBy = 'player';
   const col = o.crit ? '#ffd24a' : DMG_COLORS[type];
   addText(mo.x + randf(-8, 8), mo.y - mo.size - 8, (o.crit ? a + '!' : String(a)), col, o.crit ? 18 : o.small ? 11 : 14);
   if (!o.small) { if (res >= 0.25) addText(mo.x, mo.y - mo.size - 24, 'Resisted', '#999', 11); else if (res < 0) addText(mo.x, mo.y - mo.size - 24, 'Weak!', '#ffae3a', 12); }
+  const ai = mo.def.ai && BOSS_AI[mo.def.ai]; if (ai && ai.onHit && a > 0) ai.onHit(mo, type);
   if (mo.hp <= 0) killMonster(mo);
 }
 function damagePlayer(amount, type, src) {
@@ -1079,13 +1360,14 @@ function damagePlayer(amount, type, src) {
   let a = amount;
   if (type === 'physical') a *= 1 - P.armor / (P.armor + 40 + (src && src.level ? src.level * 12 : 60));
   else a *= 1 - Math.min(0.6, P.armor / (P.armor + 200 + (src && src.level ? src.level * 30 : 200))) - (type === 'fire' ? racePerk(P, 'resist_fire') : 0);
-  a *= 1 + buffVal(P, 'dmgTaken');
+  a *= 1 + buffVal(P, 'dmgTaken'); if (type === 'poison') a *= 1 - Math.min(0.8, buffVal(P, 'resistPoison'));
   a = Math.max(1, Math.round(a));
   P.hp -= a; P.hitFlash = 0.15; P.combatT = 4; G.shake = Math.max(G.shake, 2);
   addText(P.x + randf(-8, 8), P.y - 34, '-' + a, '#ff5050', 13);
   if (chance(0.25)) { const sl = pick(SLOTS); const it = P.equip[sl]; if (it && it.dur > 0) { it.dur = Math.max(0, it.dur - it.maxDur * CFG.DURABILITY_LOSS_PER_HIT * 0.5); if (it.dur <= 0) { log(`Your ${it.name} broke! Repair it at the Smithy.`, 'bad'); recalc(P); } } }
   if (P.channel) { P.channel = null; log('Interrupted!', 'warn'); }
-  if (P.hp <= 0) playerDie(src);
+  if (P.hp <= 0) return playerDie(src);
+  if (src && src.mods) rareOnHit(src, a);
 }
 function playerDie(src) {
   const P = G.player; P.hp = 0; G.dead = true; P.deaths++;
@@ -1109,7 +1391,7 @@ function respawn() {
 // ---------- monsters, projectiles, effects ----------
 function makeMonster(key, level, x, y, o = {}) {
   const d = MONSTERS[key]; level = Math.max(1, Math.round(level));
-  const elite = o.elite || (!d.boss && chance(0.05));
+  const elite = o.elite || (!d.boss && !o.noElite && !d.totem && !d.flees && chance(0.05));
   const L = level;
   const mo = { key, def: d, level, x, y, spawnX: x, spawnY: y, size: d.size * (elite ? 1.25 : 1), elite, raid: !!o.raid,
     maxHp: Math.round((28 + L * 16 + L * L * 0.5) * d.hp * (elite ? 2.6 : 1)), dmg: (4 + L * 2.2) * d.dmg * (elite ? 1.35 : 1), armor: L * 3,
@@ -1117,6 +1399,7 @@ function makeMonster(key, level, x, y, o = {}) {
     name: (elite ? 'Champion ' : '') + d.name, uid: uid(), bob: rand() * 6 };
   mo.hp = mo.maxHp;
   if (d.boss) { mo.phase = 0; mo.slamT = 7; mo.summons = 0; }
+  if (o.rare) makeRare(mo);
   return mo;
 }
 function moveEnt(m, e, dx, dy, r = 10) {
@@ -1149,13 +1432,16 @@ function updateMonster(m, mo, dt) {
   if (mo.hitFlash > 0) mo.hitFlash -= dt;
   if (mo.poison) { mo.poison.t -= dt; mo.poisonAcc = (mo.poisonAcc || 0) + mo.poison.dps * dt; if (mo.poisonAcc >= 1) { const a = Math.floor(mo.poisonAcc); mo.poisonAcc -= a; mo.hp -= a; if (Math.random() < 0.15) addText(mo.x, mo.y - mo.size - 6, a, DMG_COLORS.poison, 10); if (mo.hp <= 0) { killMonster(mo); return; } } if (mo.poison.t <= 0) mo.poison = null; }
   if (mo.def.regen && mo.hp < mo.maxHp) mo.hp = Math.min(mo.maxHp, mo.hp + mo.maxHp * mo.def.regen * dt);
+  if (mo.def.boss && mo.stunT > 0) mo.stunT = 0;
   if (mo.stunT > 0) { mo.stunT -= dt; return; }
+  if (mo.def.stationary) return updateTotem(m, mo, dt);
   let spd = mo.speed * (mo.slowT > 0 ? 1 - mo.slowAmt : 1) * (mo.enraged ? 1.3 : 1); if (mo.slowT > 0) mo.slowT -= dt;
   const tl = TILE_DEF[m.tile(Math.floor(mo.x / CFG.TILE), Math.floor(mo.y / CFG.TILE))]; if (tl.slow) spd *= tl.slow;
   mo.atkCd -= dt;
   const night = isNight() || m.dark; const aggroR = (mo.def.boss ? 300 : 170) * (night ? CFG.NIGHT_AGGRO_MULT : 1) * (mo.elite ? 1.1 : 1);
   const pd = dist(mo.x, mo.y, P.x, P.y);
   if (mo.def.boss) return updateBoss(m, mo, dt, spd, pd);
+  if (mo.def.flees) return updateFleer(m, mo, dt, spd, pd);
   // town is safe: only night raiders may enter; anyone else is turned back at the wall
   if (m.id === 'world' && !mo.raid) {
     if (inTown(m, mo.spawnX, mo.spawnY, 10)) { mo.dead = true; mo.deathT = 9; return; } // bad spawn point: remove silently
@@ -1181,7 +1467,7 @@ function updateMonster(m, mo, dt) {
     if (td <= reach) {
       mo.facing = Math.atan2(t.y - mo.y, t.x - mo.x);
       if (mo.atkCd <= 0) {
-        mo.atkCd = 1.25 * (mo.enraged ? 0.7 : 1); mo.atkAnim = 0.2;
+        mo.atkCd = 1.25 * (mo.enraged ? 0.7 : 1) * (mo.mods && mo.mods.swift ? 0.7 : 1); mo.atkAnim = 0.2;
         if (R) spawnProj({ owner: 'monster', src: mo, x: mo.x, y: mo.y, ang: mo.facing + randf(-0.05, 0.05), speed: R.speed, range: R.range + 40, dmg: mo.dmg, type: R.type || 'physical', color: R.color, r: 4, targetNpc: mo.target !== 'player' ? t : null });
         else if (mo.target === 'player') { damagePlayer(mo.dmg * randf(0.85, 1.15), 'physical', mo); if (mo.def.poisonHit && chance(mo.def.poisonHit)) P.poison = { dps: mo.dmg * 0.15, t: 4 }; }
         else hurtNpc(t, mo.dmg, mo);
@@ -1196,49 +1482,31 @@ function updateMonster(m, mo, dt) {
     if (!P.stealth && pd < aggroR * 0.5 && !mo.def.passive && !inTown(m, P.x, P.y, 1) && !inTown(m, mo.x, mo.y, 3)) { mo.state = 'chase'; mo.target = 'player'; }
   }
 }
-function updateBoss(m, mo, dt, spd, pd) {
-  const P = G.player;
-  const room = m.rooms[m.rooms.length - 1];
-  const inRoom = P.map === m.id && P.x / CFG.TILE > room.x - 1 && P.x / CFG.TILE < room.x + room.w + 1 && P.y / CFG.TILE > room.y - 1 && P.y / CFG.TILE < room.y + room.h + 1;
-  if (!inRoom || G.dead) { if (mo.state !== 'idle') { mo.state = 'idle'; mo.hp = mo.maxHp; mo.phase = 0; mo.enraged = false; mo.slam = null; mo.summons = 0; } steer(m, mo, mo.spawnX, mo.spawnY, spd, dt, 14); return; }
-  if (mo.state === 'idle') { mo.state = 'chase'; bossSay(mo, 'Who disturbs the Hollow Court? Your steel means nothing here.'); }
-  const frac = mo.hp / mo.maxHp;
-  if (mo.summons === 0 && frac < 0.66 || mo.summons === 1 && frac < 0.33) { mo.summons++; bossSay(mo, 'Rise, my hollow children!'); for (let k = 0; k < 3; k++) { const a = k / 3 * Math.PI * 2; const s = makeMonster(k === 2 ? 'bone_archer' : 'hollow', 12, mo.x + Math.cos(a) * 70, mo.y + Math.sin(a) * 70, {}); s.state = 'chase'; s.target = 'player'; if (!m.solidPx(s.x, s.y)) m.monsters.push(s); } }
-  if (!mo.enraged && frac < 0.22) { mo.enraged = true; bossSay(mo, 'ENOUGH! The Warden does not fall!'); }
-  if (mo.slam) {
-    mo.slam.t -= dt;
-    if (mo.slam.t <= 0) { if (dist(P.x, P.y, mo.slam.x, mo.slam.y) < mo.slam.r) damagePlayer(mo.dmg * 3.2, 'physical', mo); addEffect({ kind: 'boom', x: mo.slam.x, y: mo.slam.y, r: mo.slam.r, t: 0.5, color: '#c8b890' }); G.shake = 9; sfx('boom'); mo.slam = null; mo.slamT = randf(8, 11) * (mo.enraged ? 0.7 : 1); }
-    return;
-  }
-  mo.slamT -= dt;
-  if (mo.slamT <= 0 && pd < 260) { const a = Math.atan2(P.y - mo.y, P.x - mo.x); const sx = mo.x + Math.cos(a) * Math.min(pd, 90), sy = mo.y + Math.sin(a) * Math.min(pd, 90);
-    mo.slam = { x: sx, y: sy, r: 95, t: 1.6 }; addEffect({ kind: 'telegraph', x: sx, y: sy, r: 95, t: 1.6, dur: 1.6, color: '#ff3030' }); bossSay(mo, '*raises his great maul high*'); return; }
-  const reach = mo.size + 26;
-  if (pd <= reach) { mo.facing = Math.atan2(P.y - mo.y, P.x - mo.x); if (mo.atkCd <= 0) { mo.atkCd = 1.6 * (mo.enraged ? 0.7 : 1); mo.atkAnim = 0.25; damagePlayer(mo.dmg * randf(0.9, 1.1), 'physical', mo); } }
-  else steer(m, mo, P.x, P.y, spd, dt, 14);
-}
 function bossSay(mo, text) { mo.bubble = { text, t: 4 }; log(`${mo.def.name}: "${text}"`, 'boss'); }
 function killMonster(mo) {
   if (mo.dead) return; mo.dead = true; mo.hp = 0; const P = G.player, m = curMap();
   sfx('kill');
   if (mo.lastHitBy !== 'player' && !mo.def.boss) { if (mo.raid) G.raidKills = (G.raidKills || 0) + 1; return; }
   const lvlDiff = P.level - mo.level; const xm = clamp(1 - Math.max(0, lvlDiff - 3) * 0.15, 0.1, 1.25) * (lvlDiff < 0 ? 1 + Math.min(4, -lvlDiff) * 0.05 : 1);
-  const xp = Math.round((10 + mo.level * 6) * mo.def.xp * (mo.elite ? 3 : 1) * xm * CFG.MONSTER_XP_MULT);
-  gainXp(P, xp); addText(mo.x, mo.y - mo.size - 20, '+' + xp + ' XP', '#c8a0ff', 11); chat('combat', `Killed ${esc((mo.elite ? 'Elite ' : '') + mo.def.name)} (+${xp} XP)`, 'dim');
+  const xp = Math.round((10 + mo.level * 6) * mo.def.xp * (mo.rare ? 6 : mo.elite ? 3 : 1) * xm * CFG.MONSTER_XP_MULT);
+  gainXp(P, xp); addText(mo.x, mo.y - mo.size - 20, '+' + xp + ' XP', '#c8a0ff', 11); chat('combat', `Killed ${esc(mo.rare || mo.def.boss ? mo.name : (mo.elite ? 'Elite ' : '') + mo.def.name)} (+${xp} XP)`, mo.rare || mo.def.boss ? 'gold' : 'dim');
   P.kills[mo.key] = (P.kills[mo.key] || 0) + 1; P.totalKills++;
   if (mo.def.type === 'beast' && P.jobs.hunter) gainJobXp(P, 'hunter', 4 + mo.level * 1.5);
   if (m.id === 'world' && P.jobs.guard && dist(mo.x / CFG.TILE, mo.y / CFG.TILE, m.town.x, m.town.y) < CFG.TOWN_RADIUS + 14) gainJobXp(P, 'guard', (5 + mo.level * 2) * (mo.raid ? 2 : 1));
-  onKillForTasks(mo);
+  onKillForTasks(mo); onKillForQuests(mo);
   // loot
   const drop = (o) => m.drops.push(Object.assign({ x: mo.x + randf(-18, 18), y: mo.y + randf(-14, 14), t: 0, uid: uid() }, o));
-  if (chance(0.6) || mo.def.boss || mo.elite) drop({ gold: Math.max(1, Math.round((1 + mo.level * 0.9) * randf(0.6, 1.4) * (mo.def.gold || 1) * (mo.elite ? 3 : 1) * CFG.GOLD_DROP_MULT * (1 + P.goldFind))) });
+  if (chance(0.6) || mo.def.boss || mo.elite) drop({ gold: Math.max(1, Math.round((1 + mo.level * 0.9) * randf(0.6, 1.4) * (mo.def.gold || 1) * (mo.rare ? 6 : mo.elite ? 3 : 1) * CFG.GOLD_DROP_MULT * (1 + P.goldFind))) });
   const huntB = mo.def.type === 'beast' ? jobRank(P, 'hunter') * 0.02 : 0;
-  for (const [id, ch, a, b] of mo.def.drops) if (chance(Math.min(1, ch * (1 + huntB) * (mo.elite ? 1.5 : 1)))) drop({ item: { id, qty: randi(a, b) + (huntB && chance(huntB) ? 1 : 0) } });
-  const eqCh = mo.def.boss ? 3 : CFG.LOOT_EQUIP_CHANCE * (mo.elite ? 4 : 1) * (mo.def.xp >= 1.5 ? 1.2 : 1);
-  if (mo.def.boss) { for (let k = 0; k < 3; k++) drop({ item: randomDrop(mo.level + randi(0, 2), P.luck, 1.5) }); if (chance(0.25)) drop({ item: genEquip(pick(DROP_BASES), mo.level + 2, { rarity: 4 }) }); }
+  for (const [id, ch, a, b] of mo.def.drops) if (chance(Math.min(1, ch * (1 + huntB) * (mo.rare ? 2 : mo.elite ? 1.5 : 1)))) drop({ item: { id, qty: randi(a, b) + (huntB && chance(huntB) ? 1 : 0) + (mo.rare ? 1 : 0) } });
+  const zone = m.id === 'world' ? m.zoneAt(mo.x / CFG.TILE, mo.y / CFG.TILE) : null;
+  if (zone && ZONE_LOOT[zone.id] && !mo.def.totem) for (const [id, ch, a, b] of ZONE_LOOT[zone.id]) if (chance(ch * (mo.rare ? 3 : 1))) drop({ item: { id, qty: randi(a, b) } });
+  if (mo.rare) { drop({ item: { id: 'essence_rare', qty: randi(1, 2) } }); drop({ item: randomDrop(mo.level + 2, P.luck, 2) }); log(`${mo.name} falls! Rare loot spills out.`, 'gold'); }
+  if (mo.mods && mo.mods.splitter) { log(`${mo.name} splits apart!`, 'warn'); for (let k = 0; k < 3; k++) { const s2 = makeMonster(mo.key, Math.max(1, mo.level - 2), mo.x + randf(-30, 30), mo.y + randf(-30, 30), { noElite: true }); s2.size *= 0.8; s2.state = 'chase'; s2.target = 'player'; if (!m.solidPx(s2.x, s2.y)) m.monsters.push(s2); } }
+  const eqCh = mo.def.totem || mo.rare || mo.minionOf ? 0 : CFG.LOOT_EQUIP_CHANCE * (mo.elite ? 4 : 1) * (mo.def.xp >= 1.5 ? 1.2 : 1) * (zone ? ZONE_EQUIP_MULT[zone.id] || 1 : 1);
+  if (mo.bossId) onBossKilled(mo, drop);
   else if (chance(eqCh)) drop({ item: randomDrop(mo.level + randi(-1, 1), P.luck, mo.elite ? 0.8 : 0) });
-  if (mo.def.boss) { log('The Hollow Warden crumbles to dust. The crypt falls silent.', 'gold'); G.bossKills = (G.bossKills || 0) + 1; P.wardenKills = (P.wardenKills || 0) + 1;
-    const room = m.rooms[m.rooms.length - 1]; if (!m.objects.some(o => o.type === 'portal' && o.boss)) m.addObj({ type: 'portal', boss: true, x: room.cx, y: room.y + 1, to: 'world', name: 'Stairs up (exit)', solid: true }); }
+  if (mo.bossId === 'warden') log('The Hollow Warden crumbles to dust. The crypt falls silent.', 'gold');
 }
 function hurtNpc(n, dmg, src) {
   if (n.ko || n.hidden) return; n.hp -= Math.round(dmg * randf(0.85, 1.15) * (n.job === 'guard' ? 0.5 : 1)); n.hitFlash = 0.12;
@@ -1259,12 +1527,18 @@ function spawnTick(m) {
     const tx = Math.floor(ptx + Math.cos(a) * r), ty = Math.floor(pty + Math.sin(a) * r);
     if (m.solidAt(tx, ty)) continue; const z = m.zoneAt(tx, ty); if (!z.monsters.length) continue;
     if (dist(tx, ty, m.town.x, m.town.y) < CFG.TOWN_RADIUS + 12) continue;
-    let poiNear = false; for (const p of Object.values(m.pois)) if (dist(p.x, p.y, tx, ty) < 7) poiNear = true; if (poiNear) continue;
+    let poiNear = false; for (const p of Object.values(m.pois)) if (dist(p.x, p.y, tx, ty) < (p.lair ? 14 : 7)) poiNear = true; if (poiNear) continue;
     const table = night ? z.monsters.concat(z.night, z.night) : z.monsters;
     const key = pick(table); const lvl = zoneLevelAt(m, tx, ty) + randi(-1, 1);
     const n = MONSTERS[key].pack ? randi(2, MONSTERS[key].pack) : 1;
-    for (let k = 0; k < n; k++) { const mo = makeMonster(key, lvl, (tx + 0.5) * CFG.TILE + randf(-30, 30), (ty + 0.5) * CFG.TILE + randf(-30, 30)); if (!m.solidPx(mo.x, mo.y) && !inTown(m, mo.x, mo.y, 10)) m.monsters.push(mo); }
+    const rare = chance(CFG.RARE_CHANCE);
+    if (chance(CFG.GILDED_CHANCE)) { const g = makeMonster('gilded_goblin', lvl, (tx + 0.5) * CFG.TILE, (ty + 0.5) * CFG.TILE); if (!m.solidPx(g.x, g.y)) { m.monsters.push(g); chat('combat', 'You hear the jingle of coins nearby... a <b class="gold">Gilded Goblin</b>!', 'gold'); } continue; }
+    for (let k = 0; k < n; k++) { const mo = makeMonster(key, lvl, (tx + 0.5) * CFG.TILE + randf(-30, 30), (ty + 0.5) * CFG.TILE + randf(-30, 30), { rare: rare && k === 0 }); if (!m.solidPx(mo.x, mo.y) && !inTown(m, mo.x, mo.y, 10)) { m.monsters.push(mo); if (mo.rare) chat('combat', `A rare foe stalks nearby: <b class="gold">${esc(mo.name)}</b> (${esc(mo.status)})`, 'gold'); } }
   }
+  // boss lairs: the boss waits at home unless recently beaten
+  for (const [id, B] of Object.entries(BOSSES)) { if (B.where !== 'lair') continue; const p = m.pois[B.poi]; if (!p || dist(p.x, p.y, ptx, pty) > 32) continue;
+    if (bossAvailable(id) && !m.monsters.some(mo => mo.bossId === id && !mo.dead)) spawnBoss(m, id, (p.x + 0.5) * CFG.TILE, (p.y + 0.5) * CFG.TILE); }
+  for (const o of m.caches || []) if (Math.abs(o.x - ptx) < 30 && Math.abs(o.y - pty) < 30) o.opened = !cacheReady(o);
   // night raids on town
   if (night && P.map === 'world' && P.level >= 4) { G.raidT = (G.raidT || 60) - 1; if (G.raidT <= 0) { G.raidT = randf(90, 160); if (chance(0.45)) startRaid(m); } }
 }
@@ -1279,10 +1553,10 @@ function populateCrypt(m) {
   const rooms = m.rooms;
   for (let k = 1; k < rooms.length - 1; k++) { const rm = rooms[k]; const n = randi(3, 5) + (k > 3 ? 1 : 0);
     for (let j = 0; j < n; j++) { const key = pick(['hollow', 'hollow', 'bone_archer', 'ghoul']); const x = (rm.x + 1.5 + rand() * (rm.w - 3)) * CFG.TILE, y = (rm.y + 1.5 + rand() * (rm.h - 3)) * CFG.TILE; m.monsters.push(makeMonster(key, 11 + Math.floor(k / 2) + randi(0, 1), x, y)); } }
-  const br = rooms[rooms.length - 1]; m.monsters.push(makeMonster('warden', 15, (br.cx + 0.5) * CFG.TILE, (br.cy + 0.5) * CFG.TILE));
+  placeDungeonBoss(m, 'warden');
 }
 // ---- projectiles ----
-function projBlocked(m, x, y) { const tx = Math.floor(x / CFG.TILE), ty = Math.floor(y / CFG.TILE); const t = m.tile(tx, ty); if (t === T.WATER || t === T.DEEP) return false; return m.solidAt(tx, ty); }
+function projBlocked(m, x, y) { const tx = Math.floor(x / CFG.TILE), ty = Math.floor(y / CFG.TILE); const t = m.tile(tx, ty); if (t === T.WATER || t === T.DEEP || t === T.LAVA) return false; return m.solidAt(tx, ty); }
 function spawnProj(o) { const m = curMap(); m.projectiles.push(Object.assign({ vx: Math.cos(o.ang) * o.speed, vy: Math.sin(o.ang) * o.speed, left: o.range, hit: new Set() }, o)); }
 function updateProjectiles(m, dt) {
   const P = G.player;
@@ -1312,6 +1586,241 @@ function updateEffects(m, dt) {
   m.effects = m.effects.filter(e => !e.done);
 }
 function addText(x, y, text, color, size = 13) { if (G.texts.length > 120) G.texts.shift(); G.texts.push({ x, y, text: String(text), color, size, t: 0 }); }
+
+// ===== 06b_bosses.js =====
+// ---------- v1.2: bosses with mechanics, persistent defeats, rares, surprises ----------
+function gameDay() { return Math.floor(G.time / CFG.DAY_LENGTH_SEC); }
+function bossRec(id) { const P = G.player; if (!P.bosses) P.bosses = {}; return P.bosses[id]; }
+function bossDaysLeft(id) { const s = bossRec(id); if (!s) return 0; return Math.max(0, s.day + CFG.BOSS_RESPAWN_DAYS - gameDay()); }
+function bossAvailable(id) { return bossDaysLeft(id) <= 0; }
+function bossStatusText(id) { const s = bossRec(id); if (!s) return 'Undefeated'; const d = bossDaysLeft(id); return d > 0 ? `Defeated ×${s.kills} · returns in ${d} day${d > 1 ? 's' : ''}` : `Defeated ×${s.kills} · has returned, stronger`; }
+function spawnBoss(m, id, x, y, extra = {}) {
+  const B = BOSSES[id]; const s = bossRec(id); const kills = s ? s.kills : 0;
+  const mo = makeMonster(B.mon, B.level + Math.min(10, kills * 2), x, y, { noElite: true });
+  mo.bossId = id; mo.casts = []; mo.homeX = x; mo.homeY = y; mo.arenaR = 11; mo.summons = 0;
+  if (kills) { mo.name = 'Empowered ' + mo.name; mo.maxHp = Math.round(mo.maxHp * (1 + Math.min(0.6, kills * 0.12))); mo.hp = mo.maxHp; }
+  Object.assign(mo, extra); m.monsters.push(mo);
+  const ai = BOSS_AI[mo.def.ai]; if (ai && ai.init) ai.init(m, mo);
+  return mo;
+}
+function bossInArena(m, mo) {
+  const P = G.player; if (P.map !== m.id || G.dead) return false;
+  if (mo.room) { const r = mo.room, tx = P.x / CFG.TILE, ty = P.y / CFG.TILE; return tx > r.x - 1 && tx < r.x + r.w + 1 && ty > r.y - 1 && ty < r.y + r.h + 1; }
+  return dist(P.x, P.y, mo.homeX, mo.homeY) < mo.arenaR * CFG.TILE;
+}
+function bossMinions(m, mo) { return m.monsters.filter(x => !x.dead && x.minionOf === mo.uid); }
+function resetBoss(m, mo) {
+  mo.state = 'idle'; mo.hp = mo.maxHp; mo.enraged = false; mo.summons = 0; mo.casts = []; mo.charge = null; mo.dazed = 0; mo.slamT = 7; mo.status = '';
+  for (const x of bossMinions(m, mo)) { x.dead = true; x.deathT = 9; }
+  const ai = BOSS_AI[mo.def.ai]; if (ai && ai.init) ai.init(m, mo);
+}
+function updateBoss(m, mo, dt, spd, pd) {
+  const ai = BOSS_AI[mo.def.ai] || BOSS_AI.warden;
+  if (mo.dazed > 0) mo.dazed -= dt;
+  if (!bossInArena(m, mo)) { if (mo.state !== 'idle') resetBoss(m, mo); if (dist(mo.x, mo.y, mo.homeX, mo.homeY) > 8) steer(m, mo, mo.homeX, mo.homeY, spd, dt, 14); if (ai.idle) ai.idle(m, mo, dt); return; }
+  if (mo.state === 'idle') { mo.state = 'chase'; if (ai.aggro) ai.aggro(m, mo); }
+  tickCasts(m, mo, dt);
+  const frac = mo.hp / mo.maxHp;
+  if (!mo.enraged && frac < 0.22) { mo.enraged = true; bossSay(mo, ai.enrageLine || '*becomes enraged!*'); }
+  ai.update(m, mo, dt, spd, pd, frac);
+}
+// telegraphed area attacks: a red circle fills up, then hits whoever is still inside
+function bossCast(m, mo, o) { mo.casts.push(o); addEffect({ kind: 'telegraph', x: o.x, y: o.y, r: o.r, t: o.t, dur: o.t, color: o.color || '#ff3030' }); }
+function tickCasts(m, mo, dt) {
+  const P = G.player;
+  for (const c of mo.casts) { c.t -= dt; if (c.t > 0) continue; c.done = true;
+    if (P.map === m.id && dist(P.x, P.y, c.x, c.y) < c.r) { damagePlayer(mo.dmg * c.mult, c.type || 'physical', mo); if (c.onHit) c.onHit(); }
+    addEffect({ kind: 'boom', x: c.x, y: c.y, r: c.r, t: 0.45, color: c.color || '#c8b890' }); G.shake = Math.max(G.shake, 6); sfx('boom'); if (c.after) c.after(); }
+  mo.casts = mo.casts.filter(c => !c.done);
+}
+function bossMelee(m, mo, dt, spd, pd, type = 'physical') {
+  const P = G.player; const reach = mo.size + 26;
+  if (pd <= reach) { mo.facing = Math.atan2(P.y - mo.y, P.x - mo.x); if (mo.atkCd <= 0) { mo.atkCd = 1.6 * (mo.enraged ? 0.7 : 1); mo.atkAnim = 0.25; damagePlayer(mo.dmg * randf(0.9, 1.1), type, mo); } }
+  else steer(m, mo, P.x, P.y, spd, dt, 14);
+}
+function bossSummon(m, mo, key, n, line) {
+  if (line) bossSay(mo, line);
+  for (let k = 0; k < n; k++) { const a = k / n * Math.PI * 2 + rand(); const s = makeMonster(key, mo.level - 3, mo.x + Math.cos(a) * 70, mo.y + Math.sin(a) * 70, { noElite: true }); s.state = 'chase'; s.target = 'player'; s.minionOf = mo.uid; if (!m.solidPx(s.x, s.y)) m.monsters.push(s); }
+}
+function summonAt(mo, frac, cuts, fn) { while (mo.summons < cuts.length && frac < cuts[mo.summons]) { mo.summons++; fn(); } }
+const BRITTLE = { physical: -0.3, fire: 0, holy: 0, arcane: 0, poison: 0.5, frost: 0 };
+const BOSS_AI = {
+  // Hollow Warden (crypt): telegraphed maul slam, summons, weak to holy/fire
+  warden: {
+    enrageLine: 'ENOUGH! The Warden does not fall!',
+    init(m, mo) { mo.slamT = 7; mo.status = 'Bone armor: resists physical. Fire and holy break it.'; },
+    aggro(m, mo) { bossSay(mo, 'Who disturbs the Hollow Court? Your steel means nothing here.'); },
+    update(m, mo, dt, spd, pd, frac) {
+      const P = G.player;
+      summonAt(mo, frac, [0.66, 0.33], () => { bossSay(mo, 'Rise, my hollow children!'); for (let k = 0; k < 3; k++) { const a = k / 3 * Math.PI * 2; const s = makeMonster(k === 2 ? 'bone_archer' : 'hollow', 12, mo.x + Math.cos(a) * 70, mo.y + Math.sin(a) * 70, { noElite: true }); s.state = 'chase'; s.target = 'player'; s.minionOf = mo.uid; if (!m.solidPx(s.x, s.y)) m.monsters.push(s); } });
+      if (mo.casts.length) return;
+      mo.slamT -= dt;
+      if (mo.slamT <= 0 && pd < 260) { const a = Math.atan2(P.y - mo.y, P.x - mo.x); const sx = mo.x + Math.cos(a) * Math.min(pd, 90), sy = mo.y + Math.sin(a) * Math.min(pd, 90);
+        mo.slam = true; bossCast(m, mo, { x: sx, y: sy, r: 95, t: 1.6, mult: 3.2, color: '#ff3030', after: () => { mo.slam = false; } }); mo.slamT = randf(8, 11) * (mo.enraged ? 0.7 : 1); bossSay(mo, '*raises his great maul high*'); return; }
+      bossMelee(m, mo, dt, spd, pd);
+    },
+  },
+  // Old Tusk (meadow): charges in a line. Make him crash into a standing stone -> dazed, double damage.
+  oldtusk: {
+    enrageLine: '*Old Tusk bellows and froths!*',
+    init(m, mo) { mo.chargeT = 5; mo.charge = null; },
+    aggro(m, mo) { bossSay(mo, '*The great boar paws the earth and snorts.*'); },
+    update(m, mo, dt, spd, pd, frac) {
+      const P = G.player;
+      if (mo.dazed > 0) { mo.status = 'DAZED! Takes double damage'; return; }
+      mo.status = 'Iron hide: shrugs off blades. Weak to fire.';
+      summonAt(mo, frac, [0.5], () => bossSummon(m, mo, 'boar', 2, '*Old Tusk squeals for his sounder!*'));
+      const c = mo.charge;
+      if (c) {
+        if (c.aim > 0) { c.aim -= dt; mo.facing = c.ang; return; }
+        c.t -= dt; const step = 520 * dt, ox = mo.x, oy = mo.y; moveEnt(m, mo, Math.cos(c.ang) * step, Math.sin(c.ang) * step, mo.size * 0.55);
+        if (!c.hitP && dist(P.x, P.y, mo.x, mo.y) < mo.size + 14) { c.hitP = true; damagePlayer(mo.dmg * 2.4, 'physical', mo); moveEnt(m, P, Math.cos(c.ang) * 40, Math.sin(c.ang) * 40, 9); }
+        if (dist(ox, oy, mo.x, mo.y) < step * 0.4) { mo.charge = null; mo.dazed = 4.5; G.shake = 10; sfx('boom'); addEffect({ kind: 'boom', x: mo.x, y: mo.y, r: 50, t: 0.5, color: '#ffd24a' }); bossSay(mo, '*CRASHES into the stone and staggers, dazed!*'); mo.chargeT = randf(6, 8); return; }
+        if (c.t <= 0) { mo.charge = null; mo.chargeT = randf(4.5, 6.5) * (mo.enraged ? 0.65 : 1); }
+        return;
+      }
+      mo.chargeT -= dt;
+      if (mo.chargeT <= 0 && pd < 420) { const a = Math.atan2(P.y - mo.y, P.x - mo.x); mo.charge = { ang: a, aim: 1.1, t: 1.15 }; addEffect({ kind: 'line', x: mo.x, y: mo.y, ang: a, len: 600, w: mo.size * 1.5, t: 1.1, dur: 1.1, color: '#ff3030' }); bossSay(mo, '*lowers his tusks and scrapes the ground*'); return; }
+      bossMelee(m, mo, dt, spd, pd);
+    },
+  },
+  // Gnarlroot (forest): regrows fast unless burning; root snares; saplings
+  gnarlroot: {
+    enrageLine: '*Gnarlroot\'s branches thrash wildly!*',
+    init(m, mo) { mo.rootT = 6; mo.burnT = 0; },
+    aggro(m, mo) { bossSay(mo, '*The ancient tree groans awake. Bark knits over every scar.*'); },
+    onHit(mo, type) { if (type === 'fire') { if (!(mo.burnT > 0)) bossSay(mo, '*The bark blackens and smokes. It cannot regrow!*'); mo.burnT = 5; } },
+    update(m, mo, dt, spd, pd, frac) {
+      const P = G.player;
+      if (mo.burnT > 0) { mo.burnT -= dt; mo.status = 'BURNING: cannot regrow'; } else { mo.hp = Math.min(mo.maxHp, mo.hp + mo.maxHp * 0.02 * dt); mo.status = 'Regrowing bark (heals fast). Fire stops it.'; }
+      summonAt(mo, frac, [0.66, 0.33], () => bossSummon(m, mo, 'treant', 2, '*Saplings tear free of the soil!*'));
+      mo.rootT -= dt;
+      if (mo.rootT <= 0) { mo.rootT = randf(7, 9) * (mo.enraged ? 0.7 : 1); bossCast(m, mo, { x: P.x, y: P.y, r: 75, t: 1.3, mult: 2.0, color: '#8a5a20', onHit: () => { P.rootT = 1.6; log('Roots grip your legs!', 'warn'); } }); }
+      bossMelee(m, mo, dt, spd, pd);
+    },
+  },
+  // Granite Sentinel (highlands): nearly immune until frost makes it brittle
+  sentinel: {
+    enrageLine: '*The Sentinel\'s runes blaze white!*',
+    init(m, mo) { mo.waveT = 6; mo.throwT = 3; mo.brittle = 0; mo.resist = null; mo.color = null; },
+    aggro(m, mo) { bossSay(mo, '*Grinding stone. The runes on the Sentinel flare to life.*'); },
+    onHit(mo, type) { if (type === 'frost') { if (!(mo.brittle > 0)) bossSay(mo, '*Frost cracks across its stone skin!*'); mo.brittle = 6; } },
+    update(m, mo, dt, spd, pd, frac) {
+      const P = G.player;
+      if (mo.brittle > 0) { mo.brittle -= dt; mo.resist = BRITTLE; mo.color = '#a8c8e0'; mo.status = 'BRITTLE! Every blow bites deep'; }
+      else { mo.resist = null; mo.color = null; mo.status = 'Stoneskin: shrugs off almost everything. Frost cracks it.'; }
+      summonAt(mo, frac, [0.5], () => bossSummon(m, mo, 'golem', 2, '*Boulders shake loose and stand up!*'));
+      mo.waveT -= dt;
+      if (mo.waveT <= 0) { mo.waveT = randf(8, 10) * (mo.enraged ? 0.7 : 1); bossCast(m, mo, { x: mo.x, y: mo.y, r: 150, t: 1.6, mult: 2.6, color: '#c8b890' }); bossSay(mo, '*The ground trembles around the Sentinel!*'); return; }
+      if (pd > 140) { mo.throwT -= dt; if (mo.throwT <= 0) { mo.throwT = 2.6; spawnProj({ owner: 'monster', src: mo, x: mo.x, y: mo.y, ang: Math.atan2(P.y - mo.y, P.x - mo.x), speed: 300, range: 520, dmg: mo.dmg * 1.3, type: 'physical', color: '#8a8478', r: 8 }); } }
+      bossMelee(m, mo, dt, spd, pd);
+    },
+  },
+  // Kollgar (Emberdeep): swaps between ember and frost; immune to what he wears, weak to the other
+  kollgar: {
+    enrageLine: '*Kollgar\'s hearts roar together!*',
+    init(m, mo) { mo.att = 'ember'; mo.attT = 14; mo.eruptT = 4; mo.novaT = 5; mo.warned = false; this.apply(mo); },
+    apply(mo) { const e = mo.att === 'ember'; mo.resist = e ? { physical: 0.35, fire: 0.9, frost: -0.6, poison: 0.5 } : { physical: 0.35, frost: 0.9, fire: -0.6, poison: 0.5 }; mo.color = e ? '#ff6a2a' : '#7ac8ff'; mo.status = e ? 'EMBER: immune to fire, weak to frost' : 'FROST: immune to frost, weak to fire'; },
+    aggro(m, mo) { bossSay(mo, 'WHO BREAKS MY FORGE? Burn... or freeze. I care not which.'); },
+    update(m, mo, dt, spd, pd, frac) {
+      const P = G.player;
+      mo.attT -= dt;
+      if (mo.attT < 2.5 && !mo.warned) { mo.warned = true; bossSay(mo, '*His core flickers between red and blue...*'); }
+      if (mo.attT <= 0) { mo.att = mo.att === 'ember' ? 'frost' : 'ember'; mo.attT = mo.enraged ? 10 : 14; mo.warned = false; this.apply(mo); bossSay(mo, mo.att === 'ember' ? 'THE FORGE BURNS!' : 'THE FROST BITES!'); addEffect({ kind: 'ring', x: mo.x, y: mo.y, r: 120, t: 0.6, color: mo.color }); }
+      summonAt(mo, frac, [0.66, 0.33], () => bossSummon(m, mo, mo.att === 'ember' ? 'ember_imp' : 'rime_wisp', 2, 'Servants! To me!'));
+      if (mo.att === 'ember') { mo.eruptT -= dt; if (mo.eruptT <= 0) { mo.eruptT = randf(5, 6.5) * (mo.enraged ? 0.75 : 1); for (let k = 0; k < 3; k++) bossCast(m, mo, { x: P.x + (k ? randf(-90, 90) : 0), y: P.y + (k ? randf(-90, 90) : 0), r: 60, t: 1.3, mult: 1.8, type: 'fire', color: '#ff6a2a' }); } }
+      else { mo.novaT -= dt; if (mo.novaT <= 0) { mo.novaT = randf(6, 7.5) * (mo.enraged ? 0.75 : 1); bossCast(m, mo, { x: mo.x, y: mo.y, r: 140, t: 1.5, mult: 2.0, type: 'frost', color: '#7ac8ff', onHit: () => { P.chill = 3; } }); bossSay(mo, '*Frost gathers around Kollgar!*'); return; } }
+      bossMelee(m, mo, dt, spd, pd, mo.att === 'ember' ? 'fire' : 'frost');
+    },
+  },
+  // Rotmother (Blightmarsh): shielded while her blight idols stand; idols regrow; poison pools
+  rotmother: {
+    enrageLine: 'My children... avenge me!',
+    init(m, mo) { mo.poolT = 5; mo.spitT = 2; mo.regrow = [0, 0, 0]; mo.spots = []; for (let k = 0; k < 3; k++) { const a = k / 3 * Math.PI * 2 + 0.5; let x = mo.homeX + Math.cos(a) * 6 * CFG.TILE, y = mo.homeY + Math.sin(a) * 6 * CFG.TILE; for (let tries = 0; tries < 8 && m.solidPx(x, y); tries++) { x += randf(-40, 40); y += randf(-40, 40); } mo.spots.push([x, y]); this.totem(m, mo, k); } },
+    totem(m, mo, k) { const [x, y] = mo.spots[k]; const t = makeMonster('blight_totem', mo.level - 2, x, y, { noElite: true }); t.minionOf = mo.uid; t.totemIdx = k; t.status = 'Shields the Rotmother. Burns easily.'; m.monsters.push(t); },
+    idle(m, mo, dt) { const alive = bossMinions(m, mo).filter(x => x.def.totem).length; mo.shielded = alive > 0; },
+    aggro(m, mo) { bossSay(mo, 'Hush, little one. Mother will make you part of the bog.'); },
+    update(m, mo, dt, spd, pd, frac) {
+      const P = G.player; const totems = bossMinions(m, mo).filter(x => x.def.totem);
+      mo.shielded = totems.length > 0; mo.status = mo.shielded ? `SHIELDED by ${totems.length} blight idol${totems.length > 1 ? 's' : ''}` : 'EXPOSED! Strike now';
+      for (let k = 0; k < 3; k++) { if (totems.some(t => t.totemIdx === k)) { mo.regrow[k] = 0; continue; } mo.regrow[k] += dt; if (mo.regrow[k] >= (mo.enraged ? 18 : 26)) { mo.regrow[k] = 0; this.totem(m, mo, k); bossSay(mo, '*A blight idol sprouts anew from the mud!*'); } }
+      summonAt(mo, frac, [0.5], () => bossSummon(m, mo, 'mire_toad', 2, 'Come, my pretties!'));
+      mo.poolT -= dt;
+      if (mo.poolT <= 0) { mo.poolT = randf(5.5, 7) * (mo.enraged ? 0.7 : 1); const x = P.x, y = P.y; bossCast(m, mo, { x, y, r: 80, t: 1.2, mult: 1.2, type: 'poison', color: '#8be37a', after: () => addEffect({ kind: 'zone', x, y, r: 80, t: 6, tick: 0.5, tt: 0.5, color: DMG_COLORS.poison, onTick: () => { if (G.player.map === m.id && dist(G.player.x, G.player.y, x, y) < 80) damagePlayer(mo.dmg * 0.22, 'poison', mo); } }) }); }
+      if (pd > 90) { mo.spitT -= dt; if (mo.spitT <= 0) { mo.spitT = 2.2; spawnProj({ owner: 'monster', src: mo, x: mo.x, y: mo.y, ang: Math.atan2(P.y - mo.y, P.x - mo.x), speed: 320, range: 480, dmg: mo.dmg * 0.9, type: 'poison', color: '#8be37a', r: 6 }); } }
+      bossMelee(m, mo, dt, spd, pd, 'poison');
+    },
+  },
+};
+// stationary minions (blight idols): pulse poison around themselves
+function updateTotem(m, mo, dt) {
+  const P = G.player; mo.pulseT = (mo.pulseT || 2) - dt;
+  if (mo.pulseT <= 0) { mo.pulseT = 3.5; addEffect({ kind: 'ring', x: mo.x, y: mo.y, r: 110, t: 0.6, color: DMG_COLORS.poison }); if (P.map === m.id && dist(P.x, P.y, mo.x, mo.y) < 110) damagePlayer(mo.dmg * 0.8, 'poison', mo); }
+}
+// gilded goblin: runs away, vanishes after a while
+function updateFleer(m, mo, dt, spd, pd) {
+  const P = G.player;
+  if (pd < 300 || mo.fleeT > 0) { mo.fleeT = (mo.fleeT || 0.01) + dt; const a = Math.atan2(mo.y - P.y, mo.x - P.x) + Math.sin(mo.fleeT * 2) * 0.6; if (!moveEnt(m, mo, Math.cos(a) * spd * dt, Math.sin(a) * spd * dt, mo.size * 0.6)) moveEnt(m, mo, Math.cos(a + 1.6) * spd * dt, Math.sin(a + 1.6) * spd * dt, mo.size * 0.6);
+    if (chance(dt * 0.4)) m.drops.push({ x: mo.x, y: mo.y, gold: randi(2, 6) + mo.level, t: 0, uid: uid() });
+    if (mo.fleeT > 16) { mo.dead = true; mo.deathT = 9; log('The Gilded Goblin vanishes with its loot!', 'warn'); addEffect({ kind: 'ring', x: mo.x, y: mo.y, r: 30, t: 0.5, color: '#ffd24a' }); } }
+}
+// ---- rare monsters ----
+function makeRare(mo) {
+  mo.rare = true; mo.elite = false; mo.mods = {}; const keys = Object.keys(RARE_MODS);
+  const n = mo.level >= 15 ? 2 : 1; for (let k = 0; k < n; k++) mo.mods[pick(keys)] = true;
+  mo.name = `${pick(RARE_EPITHETS)} the ${mo.def.name}`; mo.maxHp = Math.round(mo.maxHp * 4); mo.hp = mo.maxHp; mo.dmg *= 1.5; mo.size *= 1.35; mo.size = Math.min(mo.size, 24);
+  if (mo.mods.swift) mo.speed *= 1.45;
+  if (mo.mods.stoneskin) mo.resist = Object.assign({}, mo.def.resist || {}, { physical: Math.min(0.8, ((mo.def.resist || {}).physical || 0) + 0.35) });
+  if (mo.mods.fiery) mo.resist = Object.assign({}, mo.resist || mo.def.resist || {}, { fire: 0.6 });
+  mo.status = Object.keys(mo.mods).map(k => RARE_MODS[k].name).join(', ');
+  return mo;
+}
+function rareOnHit(src, a) {
+  const P = G.player; if (!src.mods || G.dead) return;
+  if (src.mods.fiery) { const f = Math.max(1, Math.round(a * 0.3)); P.hp -= f; addText(P.x + 8, P.y - 44, '-' + f, DMG_COLORS.fire, 11); }
+  if (src.mods.frozen) P.chill = 2.5;
+  if (src.mods.vampiric) { src.hp = Math.min(src.maxHp, src.hp + a * 1.5); addText(src.x, src.y - src.size - 20, '+' + Math.round(a * 1.5), '#5f5', 10); }
+  if (P.hp <= 0) playerDie(src);
+}
+// ---- boss / rare loot ----
+function onBossKilled(mo, drop) {
+  const P = G.player, m = curMap(), id = mo.bossId, B = BOSSES[id];
+  if (!P.bosses) P.bosses = {};
+  const rec = P.bosses[id] || (P.bosses[id] = { kills: 0, day: 0 }); rec.kills++; rec.day = gameDay(); if (rec.first === undefined) rec.first = gameDay();
+  drop({ item: { id: B.trophy, qty: randi(1, 2) + (rec.kills > 1 ? 1 : 0) } });
+  drop({ item: genEquip(classGearBase(P), mo.level + 1, { rarity: Math.max(2, rollRarity(P.luck, 1.5)) }) }); // one class-suited piece, rarity still rolled
+  drop({ item: { id: pick(['potion_hp2', 'potion_hp3', 'potion_mp2']), qty: randi(1, 3) } });
+  if (chance(0.5)) drop({ item: { id: 'essence_rare', qty: 1 } });
+  for (const x of bossMinions(m, mo)) { x.dead = true; x.deathT = 0.5; }
+  G.bossKills = (G.bossKills || 0) + 1; if (id === 'warden') P.wardenKills = (P.wardenKills || 0) + 1;
+  log(`${MONSTERS[B.mon].name} is defeated! It stays down for ${CFG.BOSS_RESPAWN_DAYS} days.`, 'gold');
+  chat('system', `Trophy: ${esc(ITEMS[B.trophy].name)}. Crafters can turn it into relic gear (look for the boss's name on recipes).`, 'gold');
+  if (mo.room && !m.objects.some(o => o.type === 'portal' && o.boss)) m.addObj({ type: 'portal', boss: true, x: mo.room.cx, y: mo.room.y + 1, to: 'world', name: 'Way out', solid: true });
+  sfx('level');
+}
+// ---- surprises while gathering ----
+function gatherSurprise(o) {
+  const P = G.player, m = curMap();
+  if (chance(0.3)) { invAdd(P.inv, 'essence_rare', 1); log(`You find a Glimmering Essence tangled in the ${o.name}!`, 'gold'); return; }
+  if (m.id !== 'world') return;
+  const z = m.zoneAt(P.x / CFG.TILE, P.y / CFG.TILE); if (!z.monsters || !z.monsters.length) return;
+  const a = rand() * Math.PI * 2; const mo = makeMonster(pick(z.monsters), zoneLevelAt(m, P.x / CFG.TILE, P.y / CFG.TILE) + 1, P.x + Math.cos(a) * 60, P.y + Math.sin(a) * 60, { elite: true });
+  if (m.solidPx(mo.x, mo.y)) return; mo.state = 'chase'; mo.target = 'player'; m.monsters.push(mo);
+  P.channel = null; log(`Ambush! ${mo.name} bursts out from behind the ${o.name}!`, 'warn'); sfx('bell');
+}
+// ---- Blightmarsh caches (refill every few days) ----
+function cacheReady(o) { const P = G.player; const d = P.chests && P.chests[o.key]; return d === undefined || gameDay() - d >= CFG.CACHE_REFILL_DAYS; }
+function openCache(o) {
+  const P = G.player, m = curMap(); if (!cacheReady(o)) { const left = CFG.CACHE_REFILL_DAYS - (gameDay() - P.chests[o.key]); return log(`Empty. The bog may wash something new in within ${left} day${left > 1 ? 's' : ''}.`, 'dim'); }
+  if (!P.chests) P.chests = {}; P.chests[o.key] = gameDay(); o.opened = true;
+  const lvl = Math.round(zoneLevelAt(m, o.x, o.y));
+  if (chance(0.07)) { const mo = makeMonster('mimic', lvl + 1, (o.x + 0.5) * CFG.TILE, (o.y + 1.6) * CFG.TILE, { noElite: true }); makeRare(mo); mo.name = 'The Cache was a Mimic!'; mo.state = 'chase'; mo.target = 'player'; m.monsters.push(mo); log('The cache snaps open... it has TEETH!', 'bad'); sfx('bell'); return; }
+  const at = (dx, o2) => m.drops.push(Object.assign({ x: (o.x + 0.5 + dx) * CFG.TILE, y: (o.y + 1.5) * CFG.TILE, t: 0, uid: uid() }, o2));
+  at(0, { gold: randi(40, 120) }); at(0.7, { item: randomDrop(lvl + 1, P.luck, 0.9) });
+  const [id, , a, b] = pick(ZONE_LOOT.wastes); at(-0.7, { item: { id, qty: randi(a, b + 1) } });
+  if (chance(0.15)) at(0.3, { item: { id: 'essence_rare', qty: 1 } });
+  log('You drag open the sunken cache.', 'gold'); sfx('coin');
+}
 
 // ===== 07_npcs.js =====
 // ---------- townsfolk that live their own lives ----------
@@ -1468,6 +1977,86 @@ const Party = {
   recruit(n) { if (!this.canRecruit(n)) return false; G.player.party.push(n.id); n.inParty = true; return true; },
 };
 
+// ===== 07b_quests.js =====
+// ---------- v1.2: townsfolk favors (small quests), gifts and friendship ----------
+// Friendship (affinity) is 0-100 per townsperson, saved in P.affinity[npcId].
+// P.npcInfo[npcId] keeps talk/gift days and favors done (groundwork for recruiting later).
+const AFF_TIERS = [[0, 'Stranger'], [10, 'Acquaintance'], [30, 'Friend'], [60, 'Close Friend'], [90, 'Confidant']];
+function affTier(a) { let t = AFF_TIERS[0][1]; for (const [n, s] of AFF_TIERS) if (a >= n) t = s; return t; }
+const NPC_LIKES = {
+  guard: ['hunters_roast', 'trout_stew', 'potion_hp2'], miner: ['bread', 'hunters_roast', 'pumpkin_pie'], woodcutter: ['bread', 'hunters_roast', 'grilled_fish'],
+  farmer: ['pumpkin_pie', 'bread', 'seed_pumpkin'], fisher: ['grilled_fish', 'trout_stew', 'eel_pie'], hunter: ['hunters_roast', 'meat_raw', 'pelt_wolf'],
+  herbalist: ['herb_sunpetal', 'herb_nightbloom', 'herb_blightcap'], blacksmith: ['bar_iron', 'bar_silver', 'core_golem'], cook: ['crop_pumpkin', 'fish_trout', 'crop_moonmelon'],
+  tailor: ['silk', 'silk_spider', 'spellweave'], alchemist: ['herb_frostcap', 'gel_slime', 'gland_toad'], carpenter: ['plank_oak', 'bark_living', 'plank_ash'],
+  merchant: ['essence_rare', 'sap_amber', 'bar_silver'], laborer: ['bread', 'hunters_roast', 'grilled_fish'], priest: ['holy_water', 'dust_bone', 'ecto'],
+  elder: ['pumpkin_pie', 'trout_stew', 'herb_nightbloom'], bard: ['pumpkin_pie', 'glowfin_feast', 'feather_harpy'],
+};
+const QUEST_FLAVOR = {
+  gather: ['My stock is running thin.', 'I promised a delivery and I\'m short.', 'My back can\'t take another trip out there.'],
+  craft: ['Orders are piling up and I\'m behind.', 'I need these for a customer by tomorrow.', 'My hands are full, could you make some?'],
+  fetch: ['I\'ve been meaning to get these for ages.', 'It\'s for a little project of mine.', 'Don\'t ask what for. Just... thank you.'],
+  slay: ['They\'ve been bothering folk on the roads.', 'One of them nearly took my arm last week.', 'The guards can\'t be everywhere.'],
+};
+function npcInfo(id) { const P = G.player; if (!P.npcInfo) P.npcInfo = {}; return P.npcInfo[id] || (P.npcInfo[id] = { talkDay: -1, giftDay: -1, favors: 0, qDay: -1 }); }
+function addAffinity(n, amt, why) {
+  const P = G.player; const before = P.affinity[n.id] || 0; const a = clamp(before + amt, 0, 100); P.affinity[n.id] = a;
+  if (affTier(a) !== affTier(before)) log(`${n.name} now sees you as ${/^[AEIOU]/.test(affTier(a)) ? "an" : "a"} ${affTier(a)}.`, 'gold'); else if (why) chat('npc', `${esc(n.name)}: friendship +${amt} (${why})`, 'dim');
+}
+function questTier() { return clamp(Math.floor((G.player.level - 1) / 9), 0, 3); }
+function genNpcQuest(n) {
+  const P = G.player, t = questTier(), Tt = TIERS[t];
+  const gatherJobs = { miner: 'ore_' + Tt.ore, woodcutter: 'log_' + Tt.wood, herbalist: 'herb_' + Tt.herb, fisher: 'fish_' + Tt.fish, farmer: 'crop_' + ['wheat', 'carrot', 'pumpkin', 'moonmelon'][t] };
+  const craftJobs = { blacksmith: 'bar_' + Tt.ore, carpenter: 'plank_' + Tt.wood, tailor: CLOTH_IDS[t], cook: ['bread', 'trout_stew', 'pumpkin_pie', 'glowfin_feast'][t], alchemist: ['potion_hp1', 'potion_hp2', 'potion_hp3', 'potion_hp4'][t] };
+  let kind = gatherJobs[n.job] ? 'gather' : craftJobs[n.job] ? 'craft' : (n.job === 'guard' || n.job === 'hunter') ? 'slay' : 'fetch';
+  if (chance(0.25)) kind = pick(['gather', 'craft', 'fetch', 'slay']);
+  const q = { kind, from: n.id };
+  if (kind === 'slay') {
+    const d = (P.level - 1) / CFG.ZONE_LEVEL_PER_TILE + CFG.TOWN_RADIUS; const z = ZONES.find(zz => zz.maxD > d && zz.monsters.length) || ZONES[1];
+    q.mon = pick(z.monsters.filter(k => !MONSTERS[k].passive)) || 'rat'; q.need = randi(5, 9); q.have = 0; q.where = z.name; q.title = `Slay ${q.need} ${MONSTERS[q.mon].name}s`;
+  } else {
+    q.item = kind === 'gather' ? (gatherJobs[n.job] || pick(Object.values(gatherJobs))) : kind === 'craft' ? (craftJobs[n.job] || pick(Object.values(craftJobs)))
+      : pick([['rag_goblin', 'hide_boar', 'gel_slime', 'bread'], ['pelt_wolf', 'silk_spider', 'badge_bandit', 'potion_hp1'], ['feather_harpy', 'core_golem', 'hide_troll', 'potion_hp2'], ['scale_lurker', 'gland_toad', 'ecto', 'potion_hp3']][t]);
+    if (n.job === 'priest' && kind === 'fetch') q.item = 'holy_water';
+    q.need = kind === 'craft' ? randi(2, 5) : kind === 'gather' ? randi(5, 10) : randi(3, 6);
+    q.title = `${kind === 'gather' ? 'Gather' : kind === 'craft' ? 'Make' : 'Bring'} ${q.need} ${ITEMS[q.item].name}`;
+  }
+  const val = q.item ? ITEMS[q.item].value * q.need : (6 + P.level * 3) * q.need;
+  q.gold = Math.round(val * 1.8 + 15 + P.level * 3); q.xp = Math.round((8 + P.level * 5) * (q.need || 5) * 0.3); q.aff = kind === 'slay' ? 8 : 6;
+  if (chance(0.3)) q.bonus = P.level >= 15 && chance(0.25) ? 'essence_rare' : ['potion_hp1', 'potion_hp2', 'potion_hp3', 'potion_hp4'][t];
+  q.line = pick(QUEST_FLAVOR[kind]); q.state = 'offered';
+  return q;
+}
+function npcQuest(n) {
+  if (n.trainer) return null; const P = G.player; if (!P.npcQ) P.npcQ = {};
+  let q = P.npcQ[n.id]; if (!q && npcInfo(n.id).qDay !== gameDay()) q = P.npcQ[n.id] = genNpcQuest(n);
+  return q || null;
+}
+function questProgress(q) { return q.kind === 'slay' ? q.have : invCount(G.player.inv, q.item); }
+function questDone(q) { return questProgress(q) >= q.need; }
+function activeQuests() { const P = G.player; return Object.values(P.npcQ || {}).filter(q => q.state === 'active'); }
+function acceptQuest(n) { const q = npcQuest(n); if (!q) return; if (activeQuests().length >= CFG.NPC_QUEST_MAX) return log(`You can only hold ${CFG.NPC_QUEST_MAX} favors at once.`, 'warn'); q.state = 'active'; q.have = 0; log(`Favor accepted for ${n.name}: ${q.title}.`, 'job'); }
+function handInQuest(n) {
+  const P = G.player, q = npcQuest(n); if (!q || q.state !== 'active' || !questDone(q)) return;
+  if (q.kind !== 'slay') invRemove(P.inv, q.item, q.need);
+  P.gold += q.gold; gainXp(P, q.xp); if (q.bonus) invAdd(P.inv, q.bonus, 1);
+  const info = npcInfo(n.id); info.favors++; info.qDay = gameDay(); delete P.npcQ[n.id];
+  log(`${n.name}: "Thank you!" +${q.gold}g, +${q.xp} XP${q.bonus ? ', +1 ' + ITEMS[q.bonus].name : ''}.`, 'gold'); sfx('coin');
+  addAffinity(n, q.aff, 'favor done'); UI.dirty = true;
+}
+function abandonQuest(n) { const P = G.player; delete P.npcQ[n.id]; npcInfo(n.id).qDay = gameDay(); addAffinity(n, -2); log(`You let ${n.name} down.`, 'warn'); }
+function onKillForQuests(mo) { for (const q of activeQuests()) if (q.kind === 'slay' && q.mon === mo.key && q.have < q.need) { q.have++; if (q.have === q.need) { const n = G.npcs.find(x => x.id === q.from); log(`Favor complete: ${q.title}. Go see ${n ? n.name : 'them'}.`, 'gold'); } } }
+function giveGift(n, id) {
+  const P = G.player, info = npcInfo(n.id); if (info.giftDay === gameDay()) return log(`${n.name} has already had a gift today.`, 'warn');
+  if (!invRemove(P.inv, id, 1)) return; info.giftDay = gameDay();
+  const liked = (NPC_LIKES[n.job] || []).includes(id); const amt = liked ? 5 : ITEMS[id].value >= 20 ? 3 : 2;
+  npcSay(n, liked ? 'Oh! I love these. Thank you!' : 'Why, thank you.'); addAffinity(n, amt, liked ? 'loved the gift' : 'gift'); sfx('pick');
+}
+// marker over a townsperson: '!' has a favor for you, '?' favor ready to hand in
+function npcMarker(n) { if (n.trainer || n.hidden) return null; const q = npcQuest(n); if (!q) return null; if (q.state === 'offered') return '!'; return questDone(q) ? '?' : null; }
+// ---- party groundwork (recruiting is a future feature) ----
+Party.eligible = function (n) { const P = G.player; return !!(n.recruitable && (P.affinity[n.id] || 0) >= CFG.RECRUIT_AFFINITY && npcInfo(n.id).favors >= CFG.RECRUIT_FAVORS); };
+Party.canRecruit = function (n) { return !!(CFG.PARTY_ENABLED && Party.eligible(n) && G.player.party.length < Party.MAX); };
+
 // ===== 08_jobs.js =====
 // ---------- jobs: gathering, crafting, farming, tasks, services ----------
 function hasJob(j) { return !!G.player.jobs[j]; }
@@ -1498,6 +2087,7 @@ function finishGather(c) {
     if (o.kind === 'ore' && chance(0.02)) { const gem = genEquip(pick(['ring', 'amulet']), TIERS[o.tier].ilvl, { rarity: 1 + (chance(0.25) ? 1 : 0) }); if (invAddEquip(P.inv, gem)) log(`You found ${gem.name} in the rock!`, 'gold'); }
     if (o.kind === 'fish' && chance(0.03)) { invAdd(P.inv, 'potion_hp2', 1); log('You fished up a sealed potion bottle!', 'gold'); }
     onGatherForTasks(o.item, qty);
+    if (chance(CFG.GATHER_SURPRISE)) gatherSurprise(o);
   }
   o.charges--; sfx(o.kind === 'ore' ? 'mine' : o.kind === 'tree' ? 'chop' : 'pick');
   if (o.charges <= 0) { o.respawn = CFG.NODE_RESPAWN_SEC * (1 + o.tier * 0.3); P.channel = null; log(`The ${o.name} is exhausted.`, 'dim'); }
@@ -1507,7 +2097,7 @@ function finishGather(c) {
 function updateNodes(m, dt) { for (const o of m.objects) if (o.type === 'node' && o.charges <= 0) { o.respawn -= dt; if (o.respawn <= 0) o.charges = o.maxCharges; } }
 
 // ---- crafting ----
-function recipeOutName(r) { return r.out.item ? ITEMS[r.out.item].name + (r.out.qty > 1 ? ' x' + r.out.qty : '') : materialName(r.out.equip, r.out.tier) + ' ' + EQUIP_BASES[r.out.equip].name; }
+function recipeOutName(r) { return r.out.item ? ITEMS[r.out.item].name + (r.out.qty > 1 ? ' x' + r.out.qty : '') : (r.out.relic ? '★ ' + RELIC_BY_ID[r.out.relic].prefix : materialName(r.out.equip, r.out.tier)) + ' ' + EQUIP_BASES[r.out.equip].name; }
 function canCraft(r) { const P = G.player; return r.inputs.every(([id, q]) => invCount(P.inv, id) >= q); }
 function startCraft(r, count) {
   const P = G.player; if (!hasJob(r.job)) return needJobMsg(r.job);
@@ -1522,7 +2112,7 @@ function finishCraft(c) {
   if (r.out.equip && !invFree(P.inv)) { log('Inventory full!', 'bad'); P.channel = null; return; }
   for (const [id, q] of r.inputs) invRemove(P.inv, id, q);
   if (r.out.item) { invAdd(P.inv, r.out.item, r.out.qty); addText(P.x, P.y - 34, '+' + r.out.qty + ' ' + ITEMS[r.out.item].name, '#e8e8e8', 12); chat('loot', `Crafted ${r.out.qty}× ${esc(ITEMS[r.out.item].name)}`, ''); onCraftForTasks(r.out.item, r.out.qty); }
-  else { const q = craftQuality(jobRank(P, r.job), r.rank); const it = genEquip(r.out.equip, r.out.ilvl, { quality: q, tier: r.out.tier }); invAddEquip(P.inv, it); log(`Crafted: ${it.name}`, q >= 2 ? 'gold' : 'job', 'loot'); addText(P.x, P.y - 40, QUALITIES[q].name + '!', QUALITIES[q].color, q >= 2 ? 16 : 12); }
+  else { const q = craftQuality(jobRank(P, r.job), r.rank); const it = craftEquipOut(r, q); invAddEquip(P.inv, it); log(`Crafted: ${it.name}`, it.quality >= 2 ? 'gold' : 'job', 'loot'); addText(P.x, P.y - 40, QUALITIES[it.quality].name + '!', QUALITIES[it.quality].color, q >= 2 ? 16 : 12); }
   gainJobXp(P, r.job, r.xp); sfx('craft');
   c.left--; if (c.left > 0 && canCraft(r)) { c.t = 0; } else P.channel = null;
   UI.dirty = true; UI.refreshOpen();
@@ -1658,7 +2248,7 @@ const UI = {
     const root = $('#panel');
     this.bindGrid(root, 'inv', P.inv, (i, it, e) => {
       if (!it) return; if (e.shiftKey) { return UI.choose('Drop item?', `Drop <b>${esc(itemName(it))}</b>${it.qty > 1 ? ' x' + it.qty : ''}? It will be gone for good.`, [{ label: 'Drop it', danger: true, fn: () => { P.inv[i] = null; UI.inv(); } }], () => UI.inv()); }
-      if (it.kind === 'equip') equipItem(i); else if (ITEMS[it.id].type === 'consumable') { const id = it.id; return UI.choose(ITEMS[id].name, esc(ITEMS[id].desc || ''), [{ label: 'Use now', fn: () => { useConsumable(P, id); UI.inv(); } }].concat([0, 1, 2, 3].map(k => ({ label: 'Put on quick slot ' + (k + 1), sub: 'now: ' + (P.quick[k] ? ITEMS[P.quick[k]].name : 'empty'), fn: () => { P.quick[k] = id; UI.dirty = true; UI.inv(); } }))), () => UI.inv()); }
+      if (it.kind === 'equip') equipItem(i); else if (ITEMS[it.id].type === 'note') return UI.dialog(ITEMS[it.id].name, `<div class="dlg-line">${esc(ITEMS[it.id].text)}</div>`, [{ label: 'Close', fn: () => UI.inv() }]); else if (ITEMS[it.id].type === 'consumable') { const id = it.id; return UI.choose(ITEMS[id].name, esc(ITEMS[id].desc || ''), [{ label: 'Use now', fn: () => { useConsumable(P, id); UI.inv(); } }].concat([0, 1, 2, 3].map(k => ({ label: 'Put on quick slot ' + (k + 1), sub: 'now: ' + (P.quick[k] ? ITEMS[P.quick[k]].name : 'empty'), fn: () => { P.quick[k] = id; UI.dirty = true; UI.inv(); } }))), () => UI.inv()); }
       this.inv();
     }, (i, it) => { if (!it) return; if (it.kind === 'equip') equipItem(i); else useConsumable(P, it.id); this.inv(); });
     this.bindGrid(root, 'eq', P.equip, (s) => { unequip(s); this.inv(); }, (s) => { unequip(s); this.inv(); });
@@ -1691,7 +2281,9 @@ const UI = {
       return `<div class="job"><span class="ji">${J.icon}</span><b>${J.name}</b> rank ${j.rank} <span class="gold">${rankTitle(j.rank)}</span><div class="bar job"><i style="width:${j.rank >= CFG.JOB_RANK_MAX ? 100 : j.xp / jobXpToNext(j.rank) * 100}%"></i><span>${fmt(j.xp)} / ${fmt(jobXpToNext(j.rank))}</span></div><span class="small dim">${J.perk}</span></div>`; }).join('');
     const tasks = (G.tasks || []).filter(t => t.accepted).map(t => `<div class="small">• ${esc(t.title)} ${t.kind === 'kill' ? `(${t.have}/${t.need})` : `(${invCount(P.inv, t.item)}/${t.need})`}</div>`).join('') || '<div class="dim small">None. Visit the Job Board in the town square.</div>';
     const leads = P.leads.map(l => `<div class="small">• ${esc(l)}</div>`).join('') || '<div class="dim small">Talk to the Elder in the town square for rumors.</div>';
-    this.show('jobs', 'Jobs & Journal', `<div class="cols"><div>${rows}</div><div><h3>Active tasks</h3>${tasks}<h3>Leads</h3>${leads}<h3>Places discovered</h3><div class="small">${Object.keys(P.discovered).map(k => esc((G.maps.world.pois[k] || {}).name || k)).join(', ') || 'None yet'}</div></div></div>`, true);
+    const favors = activeQuests().map(q => { const n = G.npcs.find(x => x.id === q.from); return `<div class="small">• ${esc(q.title)} for ${esc(n ? n.name : '?')} (${Math.min(questProgress(q), q.need)}/${q.need})${questDone(q) ? ' <span class="gold">ready</span>' : ''}</div>`; }).join('') || '<div class="dim small">None. Townsfolk with a ! over their head have a favor to ask.</div>';
+    const bosses = Object.entries(BOSSES).map(([id, B]) => { const known = P.bosses && P.bosses[id] || P.discovered[B.poi]; return `<div class="small">• ${known ? esc(MONSTERS[B.mon].name) : '???'} <span class="dim">(${esc(B.zone)})</span> — ${bossStatusText(id)}</div>`; }).join('');
+    this.show('jobs', 'Jobs & Journal', `<div class="cols"><div>${rows}</div><div><h3>Active tasks</h3>${tasks}<h3>Favors for townsfolk</h3>${favors}<h3>Bosses</h3>${bosses}<h3>Leads</h3>${leads}<h3>Places discovered</h3><div class="small">${Object.keys(P.discovered).map(k => esc((G.maps.world.pois[k] || {}).name || k)).join(', ') || 'None yet'}</div></div></div>`, true);
   },
   // ----- world map -----
   map() {
@@ -1738,16 +2330,35 @@ const UI = {
   },
   npc(n) {
     const P = G.player; if (n.trainer) return this.building(n.building);
-    P.affinity[n.id] = (P.affinity[n.id] || 0); const day = Math.floor(G.time / CFG.DAY_LENGTH_SEC);
-    if (n.talkDay !== day) { n.talkDay = day; P.affinity[n.id]++; }
-    const line = n.job === 'elder' ? null : pick(NPC_LINES[n.job] || NPC_LINES.any);
-    const btns = [];
+    if (P.affinity[n.id] === undefined) P.affinity[n.id] = 0; const info = npcInfo(n.id), day = gameDay();
+    if (info.talkDay !== day) { info.talkDay = day; addAffinity(n, 1); }
+    const aff = P.affinity[n.id], q = npcQuest(n);
+    let line = n.job === 'elder' ? (P.leads.length < RUMORS.length ? 'Ah, a new face. Every trade in this valley has a teacher somewhere. Ask, and I\'ll tell you what I\'ve heard.' : 'You know all I know. Go and see the world.') : pick(NPC_LINES[n.job] || NPC_LINES.any);
+    const btns = []; let qhtml = '';
+    if (q && q.state === 'offered') { qhtml = `<div class="quest"><b>Favor:</b> "${esc(q.line)} Could you ${esc(q.title.toLowerCase())}${q.where ? ' (' + esc(q.where) + ')' : ''}?"<br><span class="small">Reward: <span class="gold">${q.gold}g</span> + ${q.xp} XP + friendship${q.bonus ? ' + ' + esc(ITEMS[q.bonus].name) : ''}</span></div>`;
+      btns.push({ label: `✔ Accept favor: ${esc(q.title)}`, disabled: activeQuests().length >= CFG.NPC_QUEST_MAX, fn: () => { acceptQuest(n); UI.npc(n); } }); }
+    else if (q && q.state === 'active') { const pr = questProgress(q), done = pr >= q.need;
+      qhtml = `<div class="quest"><b>Favor:</b> ${esc(q.title)} — ${Math.min(pr, q.need)}/${q.need} ${done ? '<span class="gold">ready!</span>' : ''}</div>`;
+      btns.push({ label: done ? `🎁 Hand in: ${esc(q.title)}` : `Hand in (${Math.min(pr, q.need)}/${q.need})`, disabled: !done, fn: () => { handInQuest(n); UI.npc(n); } });
+      btns.push({ label: 'Give up the favor', fn: () => UI.choose('Give up?', `${esc(n.name)} will be a little disappointed (-2 friendship).`, [{ label: 'Give up', danger: true, fn: () => { abandonQuest(n); UI.npc(n); } }], () => UI.npc(n)) }); }
+    else qhtml = `<div class="small dim">${esc(n.name)} has nothing else to ask of you today.</div>`;
     if (n.job === 'elder') { const next = RUMORS.find(r => !P.leads.includes(r)); btns.push({ label: next ? 'Ask for rumors' : 'No more rumors', disabled: !next, fn: () => { P.leads.push(next); log('New lead: ' + next, 'job'); UI.npc(n); } }); }
-    btns.push({ label: 'Invite to party (coming later)', disabled: !Party.canRecruit(n), tt: 'Recruiting townsfolk into your party is planned for a future version.', fn: () => Party.recruit(n) });
+    btns.push({ label: info.giftDay === day ? 'Gift given today' : '🎀 Give a gift', disabled: info.giftDay === day, fn: () => this.giftPicker(n) });
+    const elig = Party.eligible(n);
+    btns.push({ label: 'Invite to party (coming later)', disabled: !Party.canRecruit(n), tt: elig ? `${n.name} would follow you. Parties arrive in a future update.` : `Needs ${CFG.RECRUIT_AFFINITY} friendship and ${CFG.RECRUIT_FAVORS} favors. Parties arrive in a future update.`, fn: () => Party.recruit(n) });
     btns.push({ label: 'Goodbye', fn: () => UI.close() });
+    const hearts = Math.floor(aff / 10);
     this.dialog(n.name, `<div><b>${esc(n.name)}</b> · ${RACES[n.race].name} ${n.job === 'laborer' ? 'Laborer' : (JOBS[n.job] ? JOBS[n.job].name : n.job[0].toUpperCase() + n.job.slice(1))} · Level ${n.level}</div>
-      <div class="dim small">Mood: ${n.mood} · ${npcActivityText(n)} · Friendship: ${'♥'.repeat(Math.min(10, P.affinity[n.id]))}${'♡'.repeat(Math.max(0, 10 - P.affinity[n.id]))}</div>
-      <div class="dlg-line">"${esc(n.job === 'elder' ? (P.leads.length < RUMORS.length ? 'Ah, a new face. Every trade in this valley has a teacher somewhere. Ask, and I\'ll tell you what I\'ve heard.' : 'You know all I know. Go and see the world.') : line)}"</div>`, btns);
+      <div class="dim small">Mood: ${n.mood} · ${npcActivityText(n)}</div>
+      <div class="small" data-tt="Friendship rises when you talk (once a day), do favors and give gifts. Likes: ${esc((NPC_LIKES[n.job] || []).map(id => ITEMS[id] ? ITEMS[id].name : id).join(', '))}">Friendship: <span class="heart">${'♥'.repeat(hearts)}</span><span class="dim">${'♡'.repeat(10 - hearts)}</span> ${aff}/100 · <b>${affTier(aff)}</b> · Favors done: ${info.favors}${elig ? ' · <span class="gold">Would join your party (coming later)</span>' : ''}</div>
+      <div class="dlg-line">"${esc(line)}"</div>${qhtml}`, btns);
+  },
+  giftPicker(n) {
+    const P = G.player; const likes = NPC_LIKES[n.job] || []; const ids = [...new Set(P.inv.filter(s => s && !s.kind && ITEMS[s.id].type !== 'note').map(s => s.id))];
+    ids.sort((a, b) => (likes.includes(b) ? 1 : 0) - (likes.includes(a) ? 1 : 0) || ITEMS[b].value - ITEMS[a].value);
+    if (!ids.length) return this.choose('Give a gift', 'You have nothing to give. Gear can\'t be gifted, but food, materials and potions can.', [], () => UI.npc(n));
+    this.choose('Give a gift to ' + n.name, `Pick something from your bag. ${esc(n.name)} loves: ${esc(likes.map(id => ITEMS[id] ? ITEMS[id].name : id).join(', '))}.`,
+      ids.slice(0, 12).map(id => ({ label: (likes.includes(id) ? '♥ ' : '') + esc(ITEMS[id].name), sub: `you have ${invCount(P.inv, id)}${likes.includes(id) ? ' · loved (+5)' : ITEMS[id].value >= 20 ? ' · +3' : ' · +2'}`, fn: () => { giveGift(n, id); UI.npc(n); } })), () => UI.npc(n));
   },
   shop(id) {
     const P = G.player, S = SHOPS[id]; this._shop = id;
@@ -1901,12 +2512,13 @@ const HELP_HTML = `<table class="help">
 <tr><td>Esc</td><td>Menu: save, load, export/import, controls</td></tr>
 <tr><td>L or Enter</td><td>Open/close the chat log (filters: loot, XP, combat, chatter)</td></tr>
 <tr><td>1-9 in a pop-up</td><td>Pick that button</td></tr></table>
-<p class="small">Start: talk to the <b>Elder</b> in the town square for rumors, then explore. Class trainers and job teachers are spread around the world. Death costs 20% of your carried gold and 10% gear durability — bank your gold and repair at the Smithy.</p>`;
+<p class="small">Start: talk to the <b>Elder</b> in the town square for rumors, then explore. Class trainers and job teachers are spread around the world. Death costs 20% of your carried gold and 10% gear durability — bank your gold and repair at the Smithy.</p><p class="small"><b>Bosses</b> (☠ on the map) each have a trick. Read signs, notes and townsfolk gossip, and hover a monster you have beaten to see what it resists. A beaten boss stays down for 3 in-game days, then returns stronger. Its trophy lets crafters make relic gear, the best gear for that level. <b>Favors:</b> townsfolk with a <b>!</b> over their head want help. Favors, gifts and daily chats raise friendship.</p>`;
 
-function craftPreview(r) { const lo = genEquip(r.out.equip, r.out.ilvl, { quality: 0, tier: r.out.tier }), hi = genEquip(r.out.equip, r.out.ilvl, { quality: 3, tier: r.out.tier });
-  if (lo.dmg) return `<div class="tt-big">${lo.dmg[0]}-${lo.dmg[1]} (Standard) → ${hi.dmg[0]}-${hi.dmg[1]} (Masterwork) ${lo.dtype} damage</div><div class="tt-dim">+1 to 4 random bonus stats by quality</div>`;
-  if (lo.def) return `<div class="tt-big">${lo.def} (Standard) → ${hi.def} (Masterwork) Armor</div><div class="tt-dim">+1 to 4 random bonus stats by quality</div>`;
-  return '<div class="tt-dim">2 to 5 random bonus stats by quality</div>'; }
+function craftPreview(r) { const lo = craftEquipOut(r, 0), hi = craftEquipOut(r, 3); const qn = QUALITIES[lo.quality].name;
+  const rel = r.out.relic ? `<div class="gold">Relic gear (${esc(MONSTERS[BOSSES[RELIC_BY_ID[r.out.relic].boss].mon].name)} trophy): always Fine or better, +12% power and a signature bonus</div>` : '';
+  if (lo.dmg) return `<div class="tt-big">${lo.dmg[0]}-${lo.dmg[1]} (${qn}) → ${hi.dmg[0]}-${hi.dmg[1]} (Masterwork) ${lo.dtype} damage</div>${rel}<div class="tt-dim">+1 to 4 random bonus stats by quality</div>`;
+  if (lo.def) return `<div class="tt-big">${lo.def} (${qn}) → ${hi.def} (Masterwork) Armor</div>${rel}<div class="tt-dim">+1 to 4 random bonus stats by quality</div>`;
+  return rel + '<div class="tt-dim">2 to 5 random bonus stats by quality</div>'; }
 
 function statTooltip(P, k) {
   const v = P.st[k], C = CLASSES[P.cls], dmgStat = P.st[P.wpn.stat] >= P.st[C.main] ? P.wpn.stat : C.main;
@@ -1930,7 +2542,7 @@ function unpackFog(str, f) { const s = atob(str); for (let i = 0; i < s.length; 
 function serialize() {
   const P = G.player; const w = G.maps.world;
   const p = JSON.parse(JSON.stringify(P, (k, v) => (k === 'path' || k === 'channel' || k === 'attackTarget' || k === 'interact' || k === 'dash' || k === 'st' || k === 'wpn') ? undefined : v));
-  if (P.map !== 'world') { const c = w.pois.crypt; p.map = 'world'; p.x = (c.x + 0.5) * CFG.TILE; p.y = (c.y + 2.5) * CFG.TILE; }
+  if (P.map !== 'world') { const c = w.pois[P.map] || w.pois.crypt; p.map = 'world'; p.x = (c.x + 0.5) * CFG.TILE; p.y = (c.y + 2.5) * CFG.TILE; }
   return { v: CFG.VERSION, savedAt: Date.now(), player: p, time: G.time, fog: packFog(w.fog),
     plots: w.plots.filter(pl => !pl.npc).map(pl => ({ idx: pl.idx, crop: pl.crop, age: pl.crop ? G.time - pl.plantedAt : 0, growDur: pl.growDur })),
     tasks: G.tasks, taskDay: G.taskDay, buyback: G.buyback || [] };
@@ -1940,7 +2552,22 @@ function saveGame(slot) {
   catch (e) { log('Save failed: ' + e.message, 'bad'); return false; }
 }
 function saveInfo(slot) { try { const s = localStorage.getItem(SAVE_KEY(slot)); if (!s) return null; const d = JSON.parse(s); return `${d.player.name} · Lv ${d.player.level} ${RACES[d.player.race].name} ${CLASSES[d.player.cls].name} · ${new Date(d.savedAt).toLocaleString()}`; } catch (e) { return 'corrupt save'; } }
+// bring older saves up to date (v1.0 / v1.1 -> v1.2). Never throws away progress.
+function migrateSave(d) {
+  const p = d.player; const v = d.v || '1.0.0'; const older = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0); } return false; };
+  p.bosses = p.bosses || {}; p.npcQ = p.npcQ || {}; p.npcInfo = p.npcInfo || {}; p.chests = p.chests || {}; p.affinity = p.affinity || {}; p.party = p.party || [];
+  if (older(v, '1.2.0')) {
+    // the Warden kill count becomes a persistent boss record; he is ready for a rematch
+    if (p.wardenKills > 0 && !p.bosses.warden) p.bosses.warden = { kills: p.wardenKills, day: Math.floor((d.time || 0) / CFG.DAY_LENGTH_SEC) - CFG.BOSS_RESPAWN_DAYS };
+    // friendship moved from a 0-10 scale to 0-100
+    for (const k of Object.keys(p.affinity)) p.affinity[k] = Math.min(100, (p.affinity[k] || 0) * 3);
+    if (p.map && p.map !== 'world') p.map = 'world';
+    d.migratedFrom = v;
+  }
+  d.v = CFG.VERSION; return d;
+}
 function applySave(d, slot) {
+  d = migrateSave(d);
   startWorld();
   const P = Object.assign(newPlayer(d.player.name, d.player.race, d.player.color), d.player);
   P.bank.items = (P.bank.items || []).concat(new Array(Math.max(0, CFG.BANK_SLOTS - (P.bank.items || []).length)).fill(null));
@@ -1949,7 +2576,7 @@ function applySave(d, slot) {
   G.time = d.time || 0; unpackFog(d.fog, G.maps.world.fog); rebuildMapImage(G.maps.world);
   for (const s of d.plots || []) { const pl = G.maps.world.plots[s.idx]; if (pl && s.crop) { pl.crop = s.crop; pl.plantedAt = G.time - s.age; pl.growDur = s.growDur; } }
   G.tasks = d.tasks || []; G.taskDay = d.taskDay; G.buyback = d.buyback || []; G.slot = slot;
-  beginPlay(); log(`Welcome back, ${P.name}.`, 'gold');
+  beginPlay(); log(`Welcome back, ${P.name}.`, 'gold'); if (d.migratedFrom) log(`Save updated from v${d.migratedFrom} to v${CFG.VERSION}. New: the Blightmarsh, Emberdeep Mine, world bosses, rare monsters, and townsfolk favors.`, 'gold');
 }
 function loadGame(slot) { const s = localStorage.getItem(SAVE_KEY(slot)); if (!s) return; try { applySave(JSON.parse(s), slot); UI.close(); } catch (e) { alert('Could not load save: ' + e.message); console.error(e); } }
 function exportSaveText() { return 'HV1:' + btoa(unescape(encodeURIComponent(JSON.stringify(serialize())))); }
@@ -1986,8 +2613,9 @@ function newGame(name, race, color, slot) {
 }
 function changeMap(to) {
   const P = G.player; const from = P.map;
-  if (to === 'crypt') { G.maps.crypt = genCrypt((Date.now() & 0xffffff) + 7); populateCrypt(G.maps.crypt); rebuildMapImage(G.maps.crypt); P.map = 'crypt'; P.x = G.maps.crypt.spawn.x * CFG.TILE; P.y = G.maps.crypt.spawn.y * CFG.TILE; log('You descend into the Hollow Crypt. The air is cold and still.', 'boss'); }
-  else { P.map = 'world'; if (from === 'crypt') { const c = G.maps.world.pois.crypt; P.x = (c.x + 0.5) * CFG.TILE; P.y = (c.y + 2.5) * CFG.TILE; delete G.maps.crypt; } }
+  const D = DUNGEONS[to];
+  if (D) { const dm = D.gen((Date.now() & 0xffffff) + 7); G.maps[to] = dm; P.map = to; D.populate(dm); rebuildMapImage(dm); P.x = dm.spawn.x * CFG.TILE; P.y = dm.spawn.y * CFG.TILE; log(D.enter, 'boss'); }
+  else { P.map = 'world'; if (DUNGEONS[from]) { const c = G.maps.world.pois[from]; P.x = (c.x + 0.5) * CFG.TILE; P.y = (c.y + 2.5) * CFG.TILE; delete G.maps[from]; } }
   P.path = null; P.attackTarget = null; P.interact = null; P.channel = null; G.texts = [];
   if (G.started) saveGame(G.slot);
 }
@@ -2044,8 +2672,9 @@ function doInteract(t) {
     case 'board': return UI.board();
     case 'plot': return usePlot(o);
     case 'sign': return UI.dialog(o.name, `<div class="dlg-line">${esc(o.text)}</div>`, [{ label: 'Close', fn: () => UI.close() }]);
-    case 'portal': if (o.to === 'crypt' && P.level < 10) return UI.dialog('Hollow Crypt', `<div>A cold draft rises from the stairs. This place is meant for level 12+ adventurers (you are level ${P.level}).</div>`, [{ label: 'Enter anyway', fn: () => { UI.close(); changeMap('crypt'); } }, { label: 'Not yet', fn: () => UI.close() }]); return changeMap(o.to);
-    case 'chest': if (o.opened) return log('Empty.', 'dim'); o.opened = true; { const m = curMap(); m.drops.push({ x: (o.x + 0.5) * CFG.TILE, y: (o.y + 1.5) * CFG.TILE, gold: randi(20, 60), t: 0, uid: uid() }); m.drops.push({ x: (o.x + 1.2) * CFG.TILE, y: (o.y + 1.5) * CFG.TILE, item: randomDrop(13 + randi(0, 2), P.luck, 0.6), t: 0, uid: uid() }); if (chance(0.5)) m.drops.push({ x: (o.x + 0.2) * CFG.TILE, y: (o.y + 1.6) * CFG.TILE, item: { id: 'holy_water', qty: 1 }, t: 0, uid: uid() }); log('You pry open the old chest.', 'gold'); sfx('coin'); } return;
+    case 'portal': { const D = DUNGEONS[o.to]; if (D) { const st = BOSSES[Object.keys(BOSSES).find(k => BOSSES[k].where === o.to)]; const bid = Object.keys(BOSSES).find(k => BOSSES[k].where === o.to);
+      return UI.dialog(D.name, `<div>${P.level < D.minLevel ? `<span class="bad">This place is meant for level ${D.rec}+ adventurers (you are level ${P.level}).</span>` : `Recommended level ${D.rec}+.`}</div><div class="small dim">Boss: ${esc(MONSTERS[st.mon].name)} · ${bossStatusText(bid)}</div>`, [{ label: P.level < D.minLevel ? 'Enter anyway' : 'Go down', fn: () => { UI.close(); changeMap(o.to); } }, { label: 'Not yet', fn: () => UI.close() }]); } return changeMap(o.to); }
+    case 'chest': if (o.cache) return openCache(o); if (o.opened) return log('Empty.', 'dim'); o.opened = true; { const m = curMap(); if (chance(0.08)) { const mo = makeMonster('mimic', (m.fixedLevel || 12) + 1, (o.x + 0.5) * CFG.TILE, (o.y + 1.6) * CFG.TILE, { noElite: true }); mo.state = 'chase'; mo.target = 'player'; m.monsters.push(mo); log('The chest lurches... it\'s a Mimic!', 'bad'); sfx('bell'); return; } m.drops.push({ x: (o.x + 0.5) * CFG.TILE, y: (o.y + 1.5) * CFG.TILE, gold: randi(20, 60), t: 0, uid: uid() }); m.drops.push({ x: (o.x + 1.2) * CFG.TILE, y: (o.y + 1.5) * CFG.TILE, item: randomDrop((o.ilvl || 13) + randi(0, 2), P.luck, 0.6), t: 0, uid: uid() }); if (chance(0.5)) m.drops.push({ x: (o.x + 0.2) * CFG.TILE, y: (o.y + 1.6) * CFG.TILE, item: { id: 'holy_water', qty: 1 }, t: 0, uid: uid() }); log('You pry open the old chest.', 'gold'); sfx('coin'); } return;
     case 'well': P.hp = Math.min(P.maxHp, P.hp + P.maxHp * 0.1); return log('You drink cool water from the well.', 'dim');
   }
 }
@@ -2064,6 +2693,7 @@ function update(dt) {
   for (let i = 0; i < 4; i++) if (P.cds[i] > 0) P.cds[i] = Math.max(0, P.cds[i] - dt);
   let rc = false; for (const b of P.buffs) { b.t -= dt; if (b.t <= 0) rc = true; } if (rc) { P.buffs = P.buffs.filter(b => b.t > 0); recalc(P); UI.dirty = true; }
   if (P.stealth > 0) P.stealth = Math.max(0, P.stealth - dt);
+  if (P.rootT > 0) P.rootT -= dt; if (P.chill > 0) P.chill -= dt;
   if (P.hitFlash > 0) P.hitFlash -= dt; if (P.combatT > 0) P.combatT -= dt; if (P.atkAnim > 0) P.atkAnim -= dt;
   if (!G.dead) {
     P.hp = Math.min(P.maxHp, P.hp + P.regen * (P.combatT > 0 ? 0.5 : 2) * dt); P.mana = Math.min(P.maxMana, P.mana + P.manaRegen * dt);
@@ -2099,6 +2729,7 @@ function updatePlayerMove(dt) {
   // held mouse: keep walking toward cursor
   if (G.mouse.down) { G.mouse.downT += dt; if (P.holdMove && G.mouse.downT > 0.18) { P.path = null; P.moveGoal = [G.mouse.wx, G.mouse.wy]; } if (P.attackTarget && P.attackTarget.dead) { const t = entityUnderMouse(); if (t && t.kind === 'monster') P.attackTarget = t.ref; } }
   let spd = P.speed; const tl = TILE_DEF[m.tile(Math.floor(P.x / CFG.TILE), Math.floor(P.y / CFG.TILE))]; if (tl.slow) spd *= tl.slow;
+  if (P.chill > 0) spd *= 0.6; if (P.rootT > 0) spd = 0.01;
   P.atkCd = (P.atkCd || 0) - dt; P.moving = false;
   if (P.attackTarget) {
     const mo = P.attackTarget; if (mo.dead) { P.attackTarget = null; return; }
@@ -2229,6 +2860,9 @@ function render() {
     else if (t === T.COBBLE) { ctx.strokeStyle = 'rgba(0,0,0,0.15)'; ctx.strokeRect(px + 0.5, py + 0.5, 16, 16); ctx.strokeRect(px + 16.5, py + 16.5, 15, 15); }
     else if (t === T.CFLOOR) { ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.strokeRect(px + 0.5, py + 0.5, TS - 1, TS - 1); }
     else if (t === T.CWALL) { ctx.fillStyle = '#34303a'; ctx.fillRect(px, py, TS, TS - 8); }
+    else if (t === T.MFLOOR) { ctx.strokeStyle = 'rgba(0,0,0,0.22)'; ctx.strokeRect(px + 0.5, py + 0.5, TS - 1, TS - 1); if (v < 20) { ctx.fillStyle = 'rgba(255,140,60,0.15)'; ctx.fillRect(px + v, py + 12, 4, 3); } }
+    else if (t === T.MWALL) { ctx.fillStyle = '#3a2a1e'; ctx.fillRect(px, py, TS, TS - 8); }
+    else if (t === T.LAVA) { const g = 0.5 + Math.sin(now * 2 + x + y * 0.7) * 0.25; ctx.fillStyle = `rgba(255,200,60,${g})`; ctx.fillRect(px + 4 + (v % 10), py + 6 + (v % 14), 8, 4); }
     else if (t === T.FARM) { ctx.fillStyle = 'rgba(0,0,0,0.2)'; for (let k = 4; k < TS; k += 8) ctx.fillRect(px, py + k, TS, 2); }
     else if (t === T.DOCK) { ctx.fillStyle = 'rgba(0,0,0,0.2)'; for (let k = 0; k < TS; k += 8) ctx.fillRect(px + k, py, 1, TS); }
     else if (t === T.MUD && v < 40) { ctx.fillStyle = 'rgba(80,120,60,0.4)'; ctx.beginPath(); ctx.arc(px + 16, py + 16, 6, 0, 7); ctx.fill(); }
@@ -2274,9 +2908,17 @@ function drawBubble(x, y, text) {
   ctx.beginPath(); ctx.moveTo(x - 5, y); ctx.lineTo(x, y + 6); ctx.lineTo(x + 5, y); ctx.fill();
   ctx.fillStyle = '#222'; lines.forEach((l, i) => ctx.fillText(l, x, y - ht + 16 + i * 14));
 }
+// what you know about a monster: weaknesses show once you've killed one (bosses: once you've read a hint or fought them)
+function monsterHoverSub(r) {
+  const P = G.player; let sub = `Lv ${r.level}${r.def.boss ? ' · BOSS' : r.rare ? ' · RARE' : ''}`;
+  if (r.status) return sub + ' · ' + r.status;
+  const R = r.resist || r.def.resist; if (!R || !(P.kills[r.key] > 0)) return sub;
+  const weak = Object.keys(R).filter(k => R[k] < 0), res = Object.keys(R).filter(k => R[k] >= 0.3);
+  return sub + (weak.length ? ' · Weak: ' + weak.join(', ') : '') + (res.length ? ' · Resists: ' + res.join(', ') : '');
+}
 function drawHover(h) {
   const r = h.ref; let x, y, name, col = '#fff', sub = '';
-  if (h.kind === 'monster') { x = r.x; y = r.y - r.size - 16; name = `${r.name}`; sub = `Lv ${r.level}${r.def.boss ? ' · BOSS' : ''}`; col = r.elite ? '#ffd24a' : r.level > G.player.level + 3 ? '#ff6060' : r.level < G.player.level - 4 ? '#aaa' : '#fff'; ctx.strokeStyle = '#f44'; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(r.x, r.y + r.size * 0.6, r.size + 4, (r.size + 4) * 0.45, 0, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
+  if (h.kind === 'monster') { x = r.x; y = r.y - r.size - 16; name = `${r.name}`; sub = monsterHoverSub(r); col = r.rare ? '#ff9b2f' : r.def.boss ? '#ff80ff' : r.elite ? '#ffd24a' : r.level > G.player.level + 3 ? '#ff6060' : r.level < G.player.level - 4 ? '#aaa' : '#fff'; ctx.strokeStyle = '#f44'; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(r.x, r.y + r.size * 0.6, r.size + 4, (r.size + 4) * 0.45, 0, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
   else if (h.kind === 'npc') { x = r.x; y = r.y - 36; name = r.name; sub = r.trainer ? (r.teaches.startsWith('class') ? CLASSES[r.teaches.split(':')[1]].name + ' trainer' : JOBS[r.teaches.split(':')[1]].name + ' teacher') : `${RACES[r.race].name} ${JOBS[r.job] ? JOBS[r.job].name : r.job} · ${npcActivityText(r)}`; col = r.trainer ? '#ffd24a' : '#bfe3ff'; }
   else if (h.kind === 'drop') return;
   else { const o = r; x = (o.x + (o.w || 1) / 2) * CFG.TILE; y = o.y * CFG.TILE - 8; name = o.type === 'door' ? (o.building.house ? 'House' : o.building.name) : o.name;
@@ -2317,9 +2959,9 @@ function drawObj(it, now) {
   switch (o.type) {
     case 'node': {
       const dep = o.charges <= 0;
-      if (o.kind === 'ore') { ctx.fillStyle = dep ? '#5a5650' : '#7a766c'; ctx.beginPath(); ctx.moveTo(px + 3, py + 29); ctx.lineTo(px + 7, py + 10); ctx.lineTo(px + 17, py + 5); ctx.lineTo(px + 29, py + 14); ctx.lineTo(px + 29, py + 29); ctx.fill(); if (!dep) { ctx.fillStyle = ORE_COL[o.tier]; for (const [a, b] of [[10, 15], [19, 12], [15, 22], [23, 21]]) ctx.fillRect(px + a, py + b, 4, 4); } }
-      else if (o.kind === 'tree') { ctx.fillStyle = '#5a3a20'; ctx.fillRect(px + 12, py + 10, 8, 20); if (!dep) { const c = ['#3f8a34', '#2f7030', '#6a8a5a', '#5a3a6a'][o.tier]; ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.beginPath(); ctx.ellipse(px + 16, py + 29, 15, 5, 0, 0, 7); ctx.fill(); ctx.fillStyle = c; ctx.beginPath(); ctx.arc(px + 16, py + 4, 17, 0, 7); ctx.fill(); ctx.fillStyle = shade(c, 1.3); ctx.beginPath(); ctx.arc(px + 11, py - 2, 7, 0, 7); ctx.fill(); ctx.fillStyle = '#e8d8a0'; ctx.fillRect(px + 14, py + 20, 4, 3); } else { ctx.fillStyle = '#7a5a3a'; ctx.fillRect(px + 10, py + 22, 12, 8); } }
-      else if (o.kind === 'herb') { if (!dep) { ctx.strokeStyle = '#2a6a2a'; ctx.lineWidth = 2; for (let k = -1; k <= 1; k++) { ctx.beginPath(); ctx.moveTo(px + 16, py + 28); ctx.lineTo(px + 16 + k * 7, py + 14); ctx.stroke(); } ctx.lineWidth = 1; const glow = o.night ? 0.6 + Math.sin(now * 3) * 0.3 : 1; ctx.globalAlpha = o.night && !isNight() ? 0.35 : glow; ctx.fillStyle = HERB_COL[o.tier]; for (let k = -1; k <= 1; k++) { ctx.beginPath(); ctx.arc(px + 16 + k * 7, py + 13, 4, 0, 7); ctx.fill(); } ctx.globalAlpha = 1; } else { ctx.fillStyle = '#4a5a2a'; ctx.fillRect(px + 12, py + 24, 8, 4); } }
+      if (o.kind === 'ore') { ctx.fillStyle = dep ? '#5a5650' : '#7a766c'; ctx.beginPath(); ctx.moveTo(px + 3, py + 29); ctx.lineTo(px + 7, py + 10); ctx.lineTo(px + 17, py + 5); ctx.lineTo(px + 29, py + 14); ctx.lineTo(px + 29, py + 29); ctx.fill(); if (!dep) { ctx.fillStyle = (o.col || ORE_COL[o.tier]); for (const [a, b] of [[10, 15], [19, 12], [15, 22], [23, 21]]) ctx.fillRect(px + a, py + b, 4, 4); } }
+      else if (o.kind === 'tree') { ctx.fillStyle = '#5a3a20'; ctx.fillRect(px + 12, py + 10, 8, 20); if (!dep) { const c = o.col || ['#3f8a34', '#2f7030', '#6a8a5a', '#5a3a6a'][o.tier]; ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.beginPath(); ctx.ellipse(px + 16, py + 29, 15, 5, 0, 0, 7); ctx.fill(); ctx.fillStyle = c; ctx.beginPath(); ctx.arc(px + 16, py + 4, 17, 0, 7); ctx.fill(); ctx.fillStyle = shade(c, 1.3); ctx.beginPath(); ctx.arc(px + 11, py - 2, 7, 0, 7); ctx.fill(); ctx.fillStyle = '#e8d8a0'; ctx.fillRect(px + 14, py + 20, 4, 3); } else { ctx.fillStyle = '#7a5a3a'; ctx.fillRect(px + 10, py + 22, 12, 8); } }
+      else if (o.kind === 'herb') { if (!dep) { ctx.strokeStyle = '#2a6a2a'; ctx.lineWidth = 2; for (let k = -1; k <= 1; k++) { ctx.beginPath(); ctx.moveTo(px + 16, py + 28); ctx.lineTo(px + 16 + k * 7, py + 14); ctx.stroke(); } ctx.lineWidth = 1; const glow = o.night ? 0.6 + Math.sin(now * 3) * 0.3 : 1; ctx.globalAlpha = o.night && !isNight() ? 0.35 : glow; ctx.fillStyle = (o.col || HERB_COL[o.tier]); for (let k = -1; k <= 1; k++) { ctx.beginPath(); ctx.arc(px + 16 + k * 7, py + 13, 4, 0, 7); ctx.fill(); } ctx.globalAlpha = 1; } else { ctx.fillStyle = '#4a5a2a'; ctx.fillRect(px + 12, py + 24, 8, 4); } }
       else if (o.kind === 'fish' && !dep) { ctx.strokeStyle = 'rgba(255,255,255,0.7)'; for (let k = 0; k < 2; k++) { const r = ((now * 0.8 + k * 0.5) % 1) * 12 + 2; ctx.globalAlpha = 1 - r / 14; ctx.beginPath(); ctx.ellipse(px + 16, py + 16, r, r * 0.5, 0, 0, 7); ctx.stroke(); } ctx.globalAlpha = 1; if (o.tier === 3) { ctx.fillStyle = 'rgba(95,240,224,0.5)'; ctx.beginPath(); ctx.arc(px + 16, py + 16, 3, 0, 7); ctx.fill(); } }
       if (!hasJob(o.job) || dep) return; break; }
     case 'station': { ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(px + 3, py + 22, 28, 8);
@@ -2366,7 +3008,8 @@ function drawNpc(it, now) {
   const tool = { miner: '#999', woodcutter: '#8a5a2b', guard: '#ccd', fisher: '#a87', hunter: '#963' }[n.job];
   drawPerson(n.x, n.y, Object.assign(L, { tunic: n.job === 'guard' ? '#6a7a9a' : n.color, hair: n.hair, moving: n.moving, facing: n.facing, atk: n.atkAnim || (n.state === 'busy' && n.task && ['gather', 'craft'].includes(n.task.work) ? (Math.sin(now * 6) > 0.6 ? 0.1 : 0) : 0), weapon: !!tool || n.state === 'fight', weaponColor: tool, flash: n.hitFlash > 0, hat: n.trainer ? n.color : n.job === 'guard' ? '#556' : null, cape: n.trainer ? '#ffd24a' : null }), now);
   if (n.trainer) { const P = G.player; const [k, v] = n.teaches.split(':'); const learned = k === 'job' ? P.jobs[v] : P.classes[v]; if (!learned) { ctx.fillStyle = '#ffd24a'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('!', n.x, n.y - 36 - Math.abs(Math.sin(now * 3)) * 4); } }
-  else if (n.state === 'busy' && n.act === 'work' && n.task && n.task.work === 'fish') { ctx.strokeStyle = '#ddd'; ctx.beginPath(); ctx.moveTo(n.x + 6, n.y - 10); ctx.lineTo(n.x + 30, n.y - 24); ctx.lineTo(n.x + 40, n.y + 6); ctx.stroke(); }
+  else if (npcMarker(n)) { const mk = npcMarker(n); ctx.fillStyle = mk === '?' ? '#7fff7f' : '#ffd24a'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center'; ctx.strokeStyle = '#000'; ctx.lineWidth = 3; const yy = n.y - 36 - Math.abs(Math.sin(now * 3)) * 4; ctx.strokeText(mk, n.x, yy); ctx.fillText(mk, n.x, yy); ctx.lineWidth = 1; }
+  if (n.state === 'busy' && n.act === 'work' && n.task && n.task.work === 'fish' && !n.trainer) { ctx.strokeStyle = '#ddd'; ctx.beginPath(); ctx.moveTo(n.x + 6, n.y - 10); ctx.lineTo(n.x + 30, n.y - 24); ctx.lineTo(n.x + 40, n.y + 6); ctx.stroke(); }
   if (n.hp < n.maxHp) { ctx.fillStyle = '#300'; ctx.fillRect(n.x - 14, n.y - 34, 28, 3); ctx.fillStyle = '#4c4'; ctx.fillRect(n.x - 14, n.y - 34, 28 * n.hp / n.maxHp, 3); }
 }
 function drawPlayer(it, now) {
@@ -2379,6 +3022,12 @@ function drawPlayer(it, now) {
   ctx.globalAlpha = 1;
 }
 const MON_DRAW = {
+  toad(c, s, t) { ctx.beginPath(); ctx.ellipse(0, 2, s * 1.1, s * 0.75, 0, 0, 7); ctx.fill(); ctx.fillStyle = '#e8e0a0'; ctx.beginPath(); ctx.arc(-s * 0.4, -s * 0.5, 3, 0, 7); ctx.arc(s * 0.4, -s * 0.5, 3, 0, 7); ctx.fill(); },
+  totem(c, s, t) { ctx.fillRect(-s * 0.45, -s * 1.6, s * 0.9, s * 2.2); ctx.fillStyle = '#b060c0'; ctx.globalAlpha *= 0.6 + Math.sin(t * 4) * 0.3; ctx.beginPath(); ctx.arc(0, -s * 1.1, s * 0.35, 0, 7); ctx.fill(); },
+  imp(c, s, t) { ctx.beginPath(); ctx.moveTo(0, -s * 1.4 - Math.sin(t * 10) * 3); ctx.lineTo(s, s * 0.6); ctx.lineTo(-s, s * 0.6); ctx.fill(); ctx.fillStyle = '#ffe080'; ctx.beginPath(); ctx.arc(0, -s * 0.1, s * 0.4, 0, 7); ctx.fill(); },
+  wisp(c, s, t) { ctx.globalAlpha *= 0.8; ctx.beginPath(); ctx.arc(0, -s * 0.5 + Math.sin(t * 3) * 3, s * 0.8, 0, 7); ctx.fill(); ctx.globalAlpha *= 0.4; ctx.beginPath(); ctx.arc(0, -s * 0.5, s * 1.4, 0, 7); ctx.fill(); },
+  mimic(c, s, t) { ctx.fillRect(-s, -s * 0.4, s * 2, s * 1.1); ctx.fillStyle = '#d0a040'; ctx.fillRect(-s, -s * 0.1, s * 2, 3); ctx.fillStyle = '#fff'; for (let k = -3; k <= 3; k++) ctx.fillRect(k * s * 0.28 - 2, -s * 0.5 - Math.abs(Math.sin(t * 8)) * 6, 4, 6); },
+  hag(c, s, t) { ctx.beginPath(); ctx.moveTo(0, -s * 1.8); ctx.lineTo(s * 1.0, s * 0.9); ctx.lineTo(-s * 1.0, s * 0.9); ctx.fill(); ctx.fillStyle = '#9fe060'; ctx.fillRect(-s * 0.3, -s * 1.1, 4, 3); ctx.fillRect(s * 0.15, -s * 1.1, 4, 3); ctx.strokeStyle = '#4a3a20'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(s * 0.8, s * 0.8); ctx.lineTo(s * 1.1, -s * 1.6); ctx.stroke(); ctx.lineWidth = 1; },
   rat(c, s) { ctx.beginPath(); ctx.ellipse(0, 0, s * 1.2, s * 0.7, 0, 0, 7); ctx.fill(); ctx.fillRect(-s * 2, -1, s, 2); },
   boar(c, s) { ctx.beginPath(); ctx.ellipse(0, 0, s * 1.2, s * 0.8, 0, 0, 7); ctx.fill(); ctx.fillStyle = '#fff'; ctx.fillRect(s * 0.9, 2, 4, 2); },
   slime(c, s, t) { const q = Math.sin(t * 4) * 0.1; ctx.beginPath(); ctx.ellipse(0, 2, s * (1 + q), s * (0.8 - q), 0, Math.PI, 0); ctx.lineTo(s, 4); ctx.lineTo(-s, 4); ctx.fill(); },
@@ -2401,13 +3050,16 @@ function drawMonster(it, now) {
   const mo = it.mo; const s = mo.size;
   ctx.save(); ctx.translate(mo.x, mo.y); if (mo.dead) { ctx.globalAlpha = Math.max(0, 1 - mo.deathT); ctx.rotate(mo.deathT * 1.5); }
   ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(0, s * 0.7, s, s * 0.35, 0, 0, 7); ctx.fill();
+  if (mo.rare) { ctx.strokeStyle = '#ff9b2f'; ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(0, s * 0.7, s + 6, s * 0.5, 0, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
+  if (mo.shielded) { ctx.strokeStyle = 'rgba(200,155,255,0.8)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, -s * 0.2, s * 1.5, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
   if (mo.elite) { ctx.strokeStyle = '#ffd24a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(0, s * 0.7, s + 4, s * 0.45, 0, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
   const flip = Math.cos(mo.facing || 0) < 0 && mo.def.shape !== 'boss' ? -1 : 1; ctx.scale(flip, 1);
   const bob = mo.state === 'chase' || mo.state === 'return' ? Math.sin(now * 10 + mo.bob) * 1.5 : 0; ctx.translate(mo.atkAnim > 0 ? 4 : 0, bob);
-  ctx.fillStyle = mo.hitFlash > 0 ? '#fff' : mo.def.color; (MON_DRAW[mo.def.shape] || MON_DRAW.humanoid)(mo.def.color, s, now + mo.bob, mo);
+  ctx.fillStyle = mo.hitFlash > 0 ? '#fff' : (mo.color || mo.def.color); (MON_DRAW[mo.def.shape] || MON_DRAW.humanoid)(mo.color || mo.def.color, s, now + mo.bob, mo);
   if (mo.def.shape !== 'boss' && mo.def.shape !== 'skeleton') { ctx.fillStyle = mo.state === 'chase' ? '#f33' : '#111'; ctx.fillRect(s * 0.35, -s * (mo.def.shape === 'humanoid' || mo.def.shape === 'troll' ? 1.35 : 0.3), 3, 3); }
   ctx.restore();
   if (mo.stunT > 0) { ctx.fillStyle = '#ffd24a'; ctx.font = '12px sans-serif'; ctx.fillText('✦✦', mo.x, mo.y - s - 12); }
+  if (mo.dazed > 0) { ctx.fillStyle = '#ffd24a'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('★ DAZED ★', mo.x, mo.y - s - 16); }
   if (mo.slowT > 0) { ctx.fillStyle = 'rgba(143,211,255,0.35)'; ctx.beginPath(); ctx.arc(mo.x, mo.y, s + 2, 0, 7); ctx.fill(); }
   if (!mo.dead && (mo.hp < mo.maxHp || mo.def.boss) && G.hover?.ref !== mo) { const w = mo.def.boss ? 80 : 30; ctx.fillStyle = '#300'; ctx.fillRect(mo.x - w / 2, mo.y - s - 10, w, 4); ctx.fillStyle = mo.poison ? '#8be37a' : '#e33'; ctx.fillRect(mo.x - w / 2, mo.y - s - 10, w * mo.hp / mo.maxHp, 4); }
 }
@@ -2415,6 +3067,7 @@ function drawEffect(e) {
   const f = e.dur ? 1 - e.t / e.dur : e.age / (e.age + e.t);
   if (e.kind === 'arc') { ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(e.x, e.y, e.r * 0.8, e.a - e.arc / 2, e.a + e.arc / 2); ctx.stroke(); ctx.lineWidth = 1; }
   else if (e.kind === 'ring' || e.kind === 'click') { ctx.strokeStyle = e.color; ctx.globalAlpha = 1 - f; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(e.x, e.y, e.r * (0.4 + f * 0.8), 0, 7); ctx.stroke(); ctx.globalAlpha = 1; ctx.lineWidth = 1; }
+  else if (e.kind === 'line') { ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(e.ang); ctx.fillStyle = e.color; ctx.globalAlpha = 0.18; ctx.fillRect(0, -e.w / 2, e.len, e.w); ctx.globalAlpha = 0.45; ctx.fillRect(0, -e.w / 2, e.len * f, e.w); ctx.restore(); ctx.globalAlpha = 1; }
   else if (e.kind === 'boom') { ctx.fillStyle = e.color; ctx.globalAlpha = (1 - f) * 0.5; ctx.beginPath(); ctx.arc(e.x, e.y, e.r * (0.5 + f * 0.5), 0, 7); ctx.fill(); ctx.globalAlpha = 1; }
   else if (e.kind === 'telegraph') { ctx.fillStyle = e.color; ctx.globalAlpha = 0.18; ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, 7); ctx.fill(); ctx.globalAlpha = 0.45; ctx.beginPath(); ctx.arc(e.x, e.y, e.r * f, 0, 7); ctx.fill(); ctx.globalAlpha = 0.9; ctx.strokeStyle = e.color; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, 7); ctx.stroke(); ctx.lineWidth = 1; ctx.globalAlpha = 1; }
   else if (e.kind === 'zone') { ctx.fillStyle = e.color; ctx.globalAlpha = 0.15 + Math.sin(e.age * 8) * 0.05; ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, 7); ctx.fill(); ctx.globalAlpha = 0.6; ctx.strokeStyle = e.color; ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, 7); ctx.stroke(); ctx.globalAlpha = 1;
@@ -2439,18 +3092,21 @@ function drawMinimap() {
   c.drawImage(m.img, cx - span / 2, cy - span / 2, span, span, 0, 0, S, S);
   const toS = (tx, ty) => [(tx - cx) * scale + S / 2, (ty - cy) * scale + S / 2];
   if (m.id === 'world') { c.font = 'bold 10px sans-serif'; c.textAlign = 'center';
-    for (const p of Object.values(m.pois)) { if (!P.discovered[p.id]) continue; const [x, y] = toS(p.x, p.y); if (x < -5 || y < -5 || x > S + 5 || y > S + 5) continue; c.fillStyle = p.id === 'crypt' ? '#c0f' : '#ffd24a'; c.fillText(p.id === 'crypt' ? '☠' : '★', x, y + 4); }
+    for (const p of Object.values(m.pois)) { if (!P.discovered[p.id]) continue; const [x, y] = toS(p.x, p.y); if (x < -5 || y < -5 || x > S + 5 || y > S + 5) continue; c.fillStyle = poiColor(p); c.fillText(poiIcon(p), x, y + 4); }
     for (const n of G.npcs) if (!n.hidden) { const [x, y] = toS(n.x / CFG.TILE, n.y / CFG.TILE); c.fillStyle = '#9cf'; c.fillRect(x - 1, y - 1, 2, 2); }
     for (const n of G.trainers) { const [x, y] = toS(n.x / CFG.TILE, n.y / CFG.TILE); c.fillStyle = '#ffd24a'; c.fillRect(x - 1.5, y - 1.5, 3, 3); } }
   for (const mo of m.monsters) if (!mo.dead && m.fog[m.idx(clamp(mo.x / CFG.TILE | 0, 0, m.w - 1), clamp(mo.y / CFG.TILE | 0, 0, m.h - 1))]) { const [x, y] = toS(mo.x / CFG.TILE, mo.y / CFG.TILE); c.fillStyle = mo.def.boss ? '#f0f' : '#f44'; c.fillRect(x - 1.5, y - 1.5, mo.def.boss ? 5 : 3, mo.def.boss ? 5 : 3); }
   c.fillStyle = '#fff'; c.beginPath(); c.arc(S / 2, S / 2, 3, 0, 7); c.fill();
   if (isNight() || m.dark) { c.fillStyle = 'rgba(10,14,40,0.25)'; c.fillRect(0, 0, S, S); }
 }
+function poiBoss(p) { return p.lair || (p.dungeon && Object.keys(BOSSES).find(k => BOSSES[k].where === p.dungeon)); }
+function poiIcon(p) { const b = poiBoss(p); if (!b) return '★'; return bossAvailable(b) ? '☠' : '✓'; }
+function poiColor(p) { const b = poiBoss(p); if (!b) return '#ffd24a'; if (!bossAvailable(b)) return '#8f8'; return p.dungeon ? '#d0f' : '#ff5050'; }
 function drawBigMap(cvs) {
   const c = cvs.getContext('2d'), m = curMap(), P = G.player; const sc = Math.min(cvs.width / m.w, cvs.height / m.h);
   c.fillStyle = '#111'; c.fillRect(0, 0, cvs.width, cvs.height); c.imageSmoothingEnabled = false; c.drawImage(m.img, 0, 0, m.w * sc, m.h * sc);
   c.font = 'bold 12px sans-serif'; c.textAlign = 'center';
-  if (m.id === 'world') for (const p of Object.values(m.pois)) { if (!P.discovered[p.id] || p.town) continue; c.fillStyle = p.id === 'crypt' ? '#d0f' : '#ffd24a'; c.fillText((p.id === 'crypt' ? '☠ ' : '★ ') + p.name, p.x * sc, p.y * sc - 4); }
+  if (m.id === 'world') for (const p of Object.values(m.pois)) { if (!P.discovered[p.id] || p.town) continue; c.fillStyle = poiColor(p); c.fillText(poiIcon(p) + ' ' + p.name, p.x * sc, p.y * sc - 4); }
   if (m.id === 'world') { c.fillStyle = '#fff'; c.fillText('Hearthvale', m.town.x * sc, m.town.y * sc - 30); }
   c.fillStyle = '#fff'; c.strokeStyle = '#000'; c.beginPath(); c.arc(P.x / CFG.TILE * sc, P.y / CFG.TILE * sc, 5, 0, 7); c.fill(); c.stroke();
 }
