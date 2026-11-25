@@ -99,7 +99,7 @@ table.help td{padding:4px 8px;border-bottom:1px solid #2a2016;vertical-align:top
 // HEARTHVALE - tunable constants. Change numbers here to rebalance.
 // ============================================================
 const CFG = {
-  VERSION: '1.2.0',
+  VERSION: '1.3.0',
   TILE: 32,                 // pixels per tile
   WORLD_W: 240, WORLD_H: 240,
   SEED: 20261124,
@@ -142,6 +142,14 @@ const CFG = {
   CACHE_REFILL_DAYS: 2,     // Blightmarsh caches refill after this many days
   NPC_QUEST_MAX: 4,         // townsfolk favors you can hold at once
   RECRUIT_AFFINITY: 60, RECRUIT_FAVORS: 3, PARTY_ENABLED: false, // groundwork for a future party system
+  // v1.3 Hearthvale Keep
+  ROYAL_PASS_FAVORS: 2,     // court favors needed for the Inner Bailey Pass
+  ROYAL_AUDIENCE_STANDING: 30, // Royal Standing needed for an audience with the King
+  ROYAL_FREEDOM_STANDING: 50,  // Royal Standing needed (with the King's charge done) for Freedom of the Keep
+  COURT_GOLD_MULT: 2.2, COURT_NEED_MULT: 1.5, COURT_XP_MULT: 1.6, // court favors pay better and ask more
+  RAID_STANDING_PER_NIGHT: 5,  // max Royal Standing from raid kills each night
+  TOURNEY_WEEKDAY: 3, FEAST_WEEKDAY: 6, // 0 = Moonday
+  WRIT_PRICE: 400,          // Treasurer sells one Royal Commission a week (Freedom of the Keep needed)
 };
 
 // ===== 01_util.js =====
@@ -848,6 +856,54 @@ RUMORS.push(
   'Cultists in the far south-east Blightmarsh worship a "Rotmother" at a sunken altar.',
 );
 
+// ===== 03c_royal.js =====
+// ============================================================
+// v1.3 HEARTHVALE KEEP CONTENT: royal items, stations, royal-forge
+// recipes (boss trophy + Royal Commission), castle shops and the
+// library's lore books. Logic lives in 07c_court.js.
+// ============================================================
+defItem('royal_writ', { name: 'Royal Commission', tier: 2, color: '#ffd24a', value: 150, icon: 'mat', stack: 20, desc: 'A sealed writ from the Crown. The Royal Forge needs one for each piece of royal relic gear.' });
+defItem('tourney_ribbon', { name: 'Tourney Ribbon', tier: 1, color: '#e05050', value: 40, icon: 'mat', desc: 'Won in the King\'s Lists. Courtiers love a champion.' });
+defItem('court_letter', { name: 'Sealed Court Letter', tier: 0, color: '#e8dcb0', value: 5, icon: 'mat', desc: 'A letter sealed with the royal wax. Deliver it as asked.' });
+[['royal_mead', 'Royal Mead', 45, '#e0b040', { heal: 120, buff: { id: 'mead', dur: 300, stats: { str: 3, vit: 3 } } }, 'The brewhouse\'s best. +3 Str, +3 Vit for 5 min.'],
+ ['kings_pie', 'King\'s Pie', 90, '#c08a4a', { heal: 400, buff: { id: 'fed', dur: 900, regen: 7, stats: { vit: 8, str: 3, dex: 3, int: 3 } } }, 'Well Fed: +7 HP/s, +8 Vit, +3 Str/Dex/Int for 15 min.'],
+].forEach(([id, name, value, color, use, desc]) => defItem(id, { name, value, color, type: 'consumable', use, icon: 'potion', stack: 20, desc }));
+// royal stations (one per crafting job) stand outside the Royal Forge
+Object.assign(STATIONS, { royal_anvil: 'blacksmith', royal_bench: 'carpenter', royal_loom: 'tailor' });
+Object.assign(STATION_NAMES, { royal_anvil: 'Royal Anvil', royal_bench: 'Royal Workbench', royal_loom: 'Royal Loom' });
+// ---- royal relic tier: a better version of every relic piece. Needs the boss trophy again,
+// a Glimmering Essence and a Royal Commission. Out-levels its relic by 4 and is always Superior+.
+const ROYAL_STATION = { forge: 'royal_anvil', workbench: 'royal_bench', loom: 'royal_loom' };
+RECIPES.filter(r => r.out && r.out.relic).forEach(r => {
+  const s = RELIC_BY_ID[r.out.relic]; const ins = r.inputs.map(([id, q]) => [id, id === s.trophy ? q + 1 : id === 'essence_rare' ? q + 1 : Math.ceil(q * 1.3)]);
+  if (!ins.some(([id]) => id === 'essence_rare')) ins.push(['essence_rare', 1]);
+  ins.push(['royal_writ', 1]);
+  defRecipe({ job: r.job, station: ROYAL_STATION[r.station], rank: r.rank + 4, inputs: ins, out: Object.assign({}, r.out, { ilvl: r.out.ilvl + 4, royal: true, minQ: 2 }), xp: r.xp * 1.6, time: 2.5 });
+});
+// ---- castle shops ----
+SHOPS.armory = { name: 'Royal Armory', stock: ['potion_hp2', 'potion_hp3', 'oil_fire', 'oil_frost', 'antidote'], gear: [['sword'], ['axe'], ['mace'], ['shield'], ['bow'], ['plate_chest'], ['leather_chest'], ['cloth_chest']], fine: true };
+SHOPS.royal_kitchen = { name: 'Kitchens & Brewhouse', stock: ['bread', 'royal_mead', 'kings_pie', 'grilled_fish'], gear: [] };
+SHOPS.court_mage = { name: 'Court Mage', stock: ['potion_mp1', 'potion_mp2', 'oil_fire', 'oil_frost', 'holy_water'], gear: [['staff'], ['wand'], ['tome']], fine: true };
+// ---- the Library & Chancery: lore books. Some deeper boss hints; the restricted
+// shelf needs Freedom of the Keep. ----
+const LORE_BOOKS = [
+  { id: 'lb_founding', title: 'The Founding of Hearthvale', need: 1, text: 'King Aldren the First raised these walls when the vale was nothing but a ford and a hearth-fire. "A realm is a hearth," he said, "and the Crown keeps it lit." Every king since has sworn the same oath at coronation: duty first, the realm before the self.' },
+  { id: 'lb_house', title: 'House Valecrest: A Lineage', need: 1, text: 'King Aldren III is the eleventh of his line. He is known as fair but hard: he once fined his own cousin for stealing grain from the royal granary, then paid the farmer twice over from his own purse. Queen Seraphine came from the river country and keeps the gardens and the chapel. The court says she softens the King. The King says she sharpens him.' },
+  { id: 'lb_tusk', title: 'Hunting Notes of the Royal Huntsman', need: 1, boss: 'oldtusk', text: 'Old Tusk charges when you stand far off. He commits to the line and cannot turn. Stand with a standing stone at your back, step aside at the last moment, and he crashes. While he reels (a slow count of four) every blow lands twice as hard. Steel barely scratches his hide; fire oil bites far deeper.' },
+  { id: 'lb_gnarl', title: 'On the Elder Treants', need: 1, boss: 'gnarlroot', text: 'An elder treant knits two parts in a hundred of itself back every heartbeat. A minute of rest undoes a quarter-hour of chopping. Flame stops the knitting: one burn holds it for five heartbeats, so keep the fire coming. Its roots seize whoever stands still; watch the ground darken and move.' },
+  { id: 'lb_sentinel', title: 'Stoneworks of the Old Kingdom', need: 1, boss: 'sentinel', text: 'The old masons made guardians of granite and bound them with runes. Such stone turns aside nearly everything, steel, fire and prayer alike. But granite cracks in hard frost. Frost it, and for some six heartbeats every blow bites deep. Stand clear when the ground trembles about it.' },
+  { id: 'lb_kollgar', title: 'The Emberdeep Charter (restricted)', need: 3, boss: 'kollgar', text: 'The Crown chartered Emberdeep to Kollgar the forge-master, who bound a fire-heart and a frost-heart into his own chest. Every fourteen heartbeats or so the hearts trade places. What he wears, he cannot feel: in red he laughs at flame, in blue he laughs at frost. His core flickers just before the change. Carry both oils.' },
+  { id: 'lb_rot', title: 'Inquisitor\'s Report on the Marsh Cult (restricted)', need: 3, boss: 'rotmother', text: 'The cult\'s "Mother" draws life from three blight idols. While any idol stands, she cannot be harmed at all. The idols burn readily and are weak to holy light. Each idol regrows about twenty-six heartbeats after it falls, faster once she is enraged, so break all three and strike together. Bring antidotes for the pools.' },
+  { id: 'lb_warden', title: 'Burial Rites of the Hollow Court', need: 1, boss: 'warden', text: 'The Hollow Court buried its wardens in bone armor that shrugs off steel. Holy water and fire break it. When the Warden raises his maul, a shadow spreads where it will fall. He calls his dead to him as he weakens, twice, at two-thirds and one-third of his strength.' },
+  { id: 'lb_tithes', title: 'The Chancery Ledger of Tithes', need: 1, text: 'By old law every soul in the vale owes the Crown a tithe of labor or coin. The Steward keeps the rolls; the Treasurer keeps the coin. Those who serve the Crown well are written into the Roll of Honor and may walk the keep freely. The Roll lists few names. The King is sparing with honor.' },
+  { id: 'lb_marsh', title: 'A History of the Blightmarsh (restricted)', need: 3, text: 'The south-east fens were farmland once. The records speak of a famine, a desperate village, and a bargain struck with something under the water. The Crown burned the village and salted the fields. The marsh grew anyway.' },
+];
+// royal relic gear: a relic piece, made better at the Royal Forge
+function applyRoyal(it) { it.royal = true; if (it.dmg) it.dmg = it.dmg.map(v => Math.round(v * 1.1)); if (it.def) it.def = Math.round(it.def * 1.1);
+  const s = RELIC_BY_ID[it.relic]; if (s) it.name = it.name.replace(s.prefix, 'Royal ' + s.prefix); it.value = Math.round(it.value * 1.5); return it; }
+const _craftEquipOutRelic = craftEquipOut;
+craftEquipOut = function (r, q) { const it = _craftEquipOutRelic(r, q); return r.out.royal ? applyRoyal(it) : it; };
+
 // ===== 04_world.js =====
 // ---------- tiles ----------
 const T = { GRASS: 0, PATH: 1, WATER: 2, WALL: 3, SAND: 5, TREE: 6, ROCK: 7, PALISADE: 8, FLOOR: 9, CFLOOR: 10, CWALL: 11, FARM: 12, DOCK: 13, MUD: 14, COBBLE: 15, VOID: 16, DEEP: 17 };
@@ -885,7 +941,7 @@ class GameMap {
 // ---------- overworld generation ----------
 const POI_DEFS = {
   // outdoor guild halls / trainers, offsets from town centre (tiles)
-  quarry:        { name: 'Old Quarry', dx: 2, dy: -44, job: 'miner', trainer: 'Foreman Dalgrim', race: 'dwarf', hut: 'hut' },
+  quarry:        { name: 'Old Quarry', dx: 2, dy: -66, job: 'miner', trainer: 'Foreman Dalgrim', race: 'dwarf', hut: 'hut' },
   lumber_camp:   { name: 'Lumber Camp', dx: -42, dy: -38, job: 'woodcutter', trainer: 'Hewer Bram', race: 'human', hut: 'hut' },
   herb_cottage:  { name: 'Herb Cottage', dx: 8, dy: 40, job: 'herbalist', trainer: 'Old Mother Sedge', race: 'halfling', hut: 'cottage' },
   dock:          { name: 'Mirror Lake Dock', dx: 31, dy: 9, job: 'fisher', trainer: 'Netter Lyle', race: 'human', hut: 'shack' },
@@ -921,8 +977,8 @@ function genOverworld() {
   // base terrain + zones
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const i = m.idx(x, y); const d0 = dist(x, y, cx, cy);
-    const d = d0 + (fbm(x / 18, y / 18, S) - 0.5) * 16;
-    let z = 0; if (d0 > R + 0.5) { z = 1; for (let k = 1; k < ZONES.length; k++) if (d < ZONES[k].maxD) { z = k; break; } if (d >= ZONES[ZONES.length - 2].maxD) z = ZONES.length - 1; if (z === 0) z = 1; }
+    const d = zoneDist(x - cx, y - cy) + (fbm(x / 18, y / 18, S) - 0.5) * 16;
+    let z = 0; if (d0 > R + 0.5 && !inCastleRel(x - cx, y - cy, 1)) { z = 1; for (let k = 1; k < ZONES.length; k++) if (d < ZONES[k].maxD) { z = k; break; } if (d >= ZONES[ZONES.length - 2].maxD) z = ZONES.length - 1; if (z === 0) z = 1; }
     m.zone[i] = z; m.var[i] = (hash2(x, y, S + 1) * 255) | 0; m.tiles[i] = T.GRASS;
     if (z === 0) continue;
     const n = fbm(x / 10, y / 10, S + 3), n2 = fbm(x / 7, y / 7, S + 9), r = hash2(x, y, S + 2);
@@ -949,13 +1005,16 @@ function genOverworld() {
       px = Math.round(lerp(x0, x1, t) + jx); py = Math.round(lerp(y0, y1, t) + jy);
       for (let a = -wdt; a <= wdt; a++) for (let b = -wdt; b <= wdt; b++) { const tt = m.tile(px + a, py + b); if (tt === T.WATER || tt === T.DEEP) m.set(px + a, py + b, T.DOCK); else if (m.in(px + a, py + b) && tt !== T.PALISADE) m.set(px + a, py + b, Math.abs(a) + Math.abs(b) < 2 ? T.PATH : (tt === T.TREE || tt === T.ROCK ? T.GRASS : tt)); } } };
   const G4 = { n: [cx, cy - R - 1], s: [cx, cy + R + 1], e: [cx + R + 1, cy], w: [cx - R - 1, cy] };
-  const gateFor = (dx, dy) => Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? G4.e : G4.w) : (dy > 0 ? G4.s : G4.n);
-  for (const [id, p] of Object.entries(POI_DEFS)) { const g = gateFor(p.dx, p.dy); road(g[0], g[1], cx + p.dx, cy + p.dy + 3); }
-  road(G4.n[0], G4.n[1], cx, 5); road(G4.s[0], G4.s[1], cx, H - 6); road(G4.e[0], G4.e[1], W - 6, cy); road(G4.w[0], G4.w[1], 5, cy);
+  // v1.3: the castle sits on the north gate, so northern roads leave through its sally ports
+  const PW = [cx + CASTLE.x0 - 2, cy + CASTLE.sallyY], PE = [cx + CASTLE.x1 + 2, cy + CASTLE.sallyY];
+  const gateFor = (dx, dy) => Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? G4.e : G4.w) : (dy > 0 ? G4.s : (dx < 0 ? PW : PE));
+  for (const [id, p] of Object.entries(POI_DEFS)) { let g = gateFor(p.dx, p.dy); if ((g === PW || g === PE) && cy + p.dy + 3 < cy + CASTLE.sallyY) g = [g[0] + (g === PW ? -2 : 2), cy + CASTLE.y0 - 3]; road(g[0], g[1], cx + p.dx, cy + p.dy + 3); }
+  const top = cy + CASTLE.y0 - 3; road(PW[0], PW[1], PW[0] - 2, top); road(PW[0] - 2, top, cx, top); road(PE[0], PE[1], PE[0] + 2, top); road(PE[0] + 2, top, cx, top); road(cx, top, cx, 5); road(G4.s[0], G4.s[1], cx, H - 6); road(G4.e[0], G4.e[1], W - 6, cy); road(G4.w[0], G4.w[1], 5, cy);
   // town
   buildTown(m, cx, cy);
+  buildCastle(m, cx, cy);
   // POIs
-  m.pois = {};
+  m.pois = {}; m.pois.castle = { id: 'castle', x: cx, y: cy - 41, name: 'Hearthvale Keep', castle: true };
   for (const [id, p] of Object.entries(POI_DEFS)) {
     const px = cx + p.dx, py = cy + p.dy;
     for (let y = py - 6; y <= py + 6; y++) for (let x = px - 7; x <= px + 7; x++) { if (dist(x, y, px, py) < 6.5) { const t = m.tile(x, y); if (t !== T.PATH && t !== T.DOCK && t !== T.WATER && t !== T.DEEP) m.set(x, y, T.GRASS); } }
@@ -1191,6 +1250,204 @@ const DUNGEONS = {
   emberdeep: { name: 'Emberdeep Mine', gen: s => genEmberdeep(s), populate: m => populateEmberdeep(m), minLevel: 17, rec: 21, enter: 'You climb down into Emberdeep. Heat and frost swirl through the tunnels.' },
 };
 
+// ===== 04c_castle.js =====
+// ============================================================
+// v1.3 HEARTHVALE KEEP: the royal castle on the north side of town,
+// plus a reusable INTERIOR system (ASCII layouts -> walkable maps).
+// Castle offsets are in tiles from the town centre (north = negative y).
+// To give any building an interior later: add an INTERIOR_LAYOUTS entry,
+// an INTERIORS entry naming the building, and set `interior` on the building.
+// ============================================================
+T.SWALL = 21; T.CARPET = 22; T.FENCE = 23; T.GARDEN = 24; T.SFLOOR = 25;
+TILE_DEF[T.SWALL] = { solid: 1, color: '#8c867a' }; TILE_DEF[T.CARPET] = { solid: 0, color: '#8a2a30' };
+TILE_DEF[T.FENCE] = { solid: 1, color: '#9a7a4a' }; TILE_DEF[T.GARDEN] = { solid: 0, color: '#4f9a48' }; TILE_DEF[T.SFLOOR] = { solid: 0, color: '#7e7a72' };
+const CASTLE = { x0: -26, x1: 26, y0: -60, y1: -23, innerY: -43, sallyY: -32,
+  outer: { x0: -24, x1: 24, y0: -41, y1: -25 }, inner: { x0: -24, x1: 24, y0: -58, y1: -44 } };
+function inCastleRel(dx, dy, pad = 0) { return dx >= CASTLE.x0 - pad && dx <= CASTLE.x1 + pad && dy >= CASTLE.y0 - pad && dy <= CASTLE.y1 + pad; }
+function inCastle(m, px, py, pad = 0) { return m.id === 'world' && !!m.castle && inCastleRel(Math.floor(px / CFG.TILE) - m.cx, Math.floor(py / CFG.TILE) - m.cy, pad); }
+// distance used for zones and monster levels. North of town the castle pushes the wilds
+// back, so the meadow (and the Old Quarry) start just beyond its walls.
+function zoneDist(dx, dy) { const d0 = Math.hypot(dx, dy); if (dy >= -CFG.TOWN_RADIUS) return d0; const w = clamp(1 - (Math.abs(dx) - 26) / 8, 0, 1); if (!w) return d0; return Math.hypot(dx, dy + Math.min(22, -CFG.TOWN_RADIUS - dy) * w); }
+const CASTLE_BUILDINGS = [
+  // outer bailey (open to everyone)
+  { id: 'c_barracks', name: 'Royal Barracks & Armory', x: -24, y: -41, w: 8, h: 4, door: 's', roof: '#4a5a7a', services: ['shop:armory', 'royal:barracks'] },
+  { id: 'c_stables', name: 'Royal Stables', x: -15, y: -41, w: 7, h: 4, door: 's', roof: '#7a5a3a', services: ['royal:stables'] },
+  { id: 'c_mews', name: 'Mews & Kennels', x: -7, y: -41, w: 4, h: 3, door: 's', roof: '#6a6a4a', services: ['royal:mews'] },
+  { id: 'c_forge', name: 'Royal Forge', x: 3, y: -41, w: 6, h: 4, door: 's', roof: '#4a4a52', services: ['shop:smith', 'repair', 'royal:forge'] },
+  { id: 'c_kitchens', name: 'Kitchens & Brewhouse', x: 11, y: -41, w: 7, h: 4, door: 's', roof: '#8a5a3a', services: ['shop:royal_kitchen', 'royal:kitchens'] },
+  { id: 'c_granary', name: 'Royal Granary', x: 20, y: -41, w: 4, h: 4, door: 's', roof: '#a08a4a', services: ['royal:granary'] },
+  // inner bailey (Inner Bailey Pass)
+  { id: 'c_greathall', name: 'Great Hall', x: -23, y: -57, w: 12, h: 6, door: 's', roof: '#6a3a3a', inner: true, services: ['royal:greathall'], interior: 'greathall' },
+  { id: 'c_keep', name: 'The Keep', x: -7, y: -58, w: 15, h: 8, door: 's', roof: '#4a4a5a', inner: true, keep: true, services: ['royal:keep'], interior: 'keep' },
+  { id: 'c_chapel', name: 'Royal Chapel', x: 11, y: -57, w: 7, h: 6, door: 's', roof: '#d8d0c0', inner: true, services: ['shop:chapel', 'royal:chapel'] },
+  { id: 'c_tower', name: 'Mage Tower', x: 20, y: -57, w: 4, h: 5, door: 's', roof: '#4a3a8a', tower: true, inner: true, services: ['shop:court_mage', 'royal:tower'], interior: 'magetower' },
+  { id: 'c_library', name: 'Library & Chancery', x: -23, y: -48, w: 9, h: 4, door: 'e', roof: '#5a4a6a', inner: true, services: ['royal:library'] },
+  { id: 'c_lodgings', name: 'Guest Lodgings', x: 15, y: -48, w: 9, h: 4, door: 'w', roof: '#7a4a5a', inner: true, services: ['royal:lodgings'] },
+];
+function buildCastle(m, cx, cy) {
+  const C = CASTLE, S = (x, y, t) => m.set(cx + x, cy + y, t), O = o => m.addObj(Object.assign(o, { x: cx + o.x, y: cy + o.y }));
+  m.castle = { cx, cy }; m.cx = cx; m.cy = cy;
+  // the north arc of the town palisade becomes stone wall
+  for (let y = cy - CFG.TOWN_RADIUS - 2; y < cy - 10; y++) for (let x = cx - CFG.TOWN_RADIUS - 2; x <= cx + CFG.TOWN_RADIUS + 2; x++) if (m.tile(x, y) === T.PALISADE) m.set(x, y, T.SWALL);
+  // clear a margin around the walls, then lay the footprint
+  for (let y = C.y0 - 3; y <= C.y1; y++) for (let x = C.x0 - 3; x <= C.x1 + 3; x++) { if (inCastleRel(x, y)) continue; const t = m.tile(cx + x, cy + y); if (t === T.TREE || t === T.ROCK || t === T.WATER || t === T.DEEP || t === T.MUD) S(x, y, T.GRASS); }
+  for (let y = C.y0; y <= C.y1; y++) for (let x = C.x0; x <= C.x1; x++) {
+    const edge = x <= C.x0 + 1 || x >= C.x1 - 1 || y <= C.y0 + 1 || y >= C.y1 - 1;
+    S(x, y, edge || y === C.innerY || y === C.innerY + 1 ? T.SWALL : T.GRASS); m.zone[m.idx(cx + x, cy + y)] = 0;
+  }
+  // gatehouse (to town), inner gate, two sally ports (west/east), courtyard roads
+  for (let x = -1; x <= 1; x++) for (const y of [-24, -23, -22, C.innerY, C.innerY + 1]) S(x, y, T.COBBLE);
+  for (let y = C.sallyY - 1; y <= C.sallyY + 1; y++) for (const x of [C.x0 - 1, C.x0, C.x0 + 1, C.x1 - 1, C.x1, C.x1 + 1]) S(x, y, T.COBBLE);
+  for (let y = C.outer.y0; y <= C.outer.y1; y++) for (let x = -1; x <= 1; x++) S(x, y, T.COBBLE);
+  for (let x = C.outer.x0; x <= C.outer.x1; x++) for (let y = C.sallyY - 1; y <= C.sallyY + 1; y++) S(x, y, T.COBBLE);
+  // causeways out of the sally ports (bridge any water so roads and raiders get through)
+  for (let k = 1; k <= 16; k++) for (let y = C.sallyY - 1; y <= C.sallyY + 1; y++) for (const x of [C.x0 - 1 - k, C.x1 + 1 + k]) { const t = m.tile(cx + x, cy + y); if (t === T.WATER || t === T.DEEP) S(x, y, T.DOCK); else if (t === T.TREE || t === T.ROCK || t === T.MUD) S(x, y, T.PATH); }
+  for (let y = C.inner.y0; y <= C.inner.y1; y++) for (let x = -1; x <= 1; x++) S(x, y, T.COBBLE);
+  for (let x = -14; x <= 14; x++) S(x, -46, T.COBBLE);
+  for (let x = -18; x <= 23; x++) S(x, -50, T.COBBLE);
+  // tiltyard (the King's Lists) and the Queen's garden
+  for (let y = -29; y <= -25; y++) for (let x = -20; x <= -4; x++) S(x, y, (y === -29 || y === -25 || x === -20 || x === -4) ? T.FENCE : T.SAND);
+  S(-12, -29, T.SAND); O({ type: 'lists_gate', x: -12, y: -29, name: 'The King\'s Lists', solid: true });
+  for (let y = -29; y <= -26; y++) for (let x = 4; x <= 22; x++) S(x, y, T.GARDEN);
+  for (const [x, y, t] of [[6, -28, 0], [9, -27, 0], [11, -26, 0], [17, -28, 1], [20, -27, 1], [22, -29, 1]]) m.addObj(makeNode('herb', t, cx + x, cy + y));
+  O({ type: 'fountain', x: 13, y: -28, w: 2, name: 'The Queen\'s Fountain', solid: true });
+  O({ type: 'well', x: -3, y: -27, name: 'Castle Well', solid: true });
+  for (const b0 of CASTLE_BUILDINGS) { const b = placeBuilding(m, Object.assign({ stone: true }, b0), cx, cy); m.set(b.outX, b.outY, T.COBBLE); }
+  // royal crafting stations, kitchen stove, desks
+  for (const [st, x] of [['royal_anvil', 3], ['royal_bench', 6], ['royal_loom', 9]]) { S(x, -35, T.COBBLE); O({ type: 'station', station: st, job: STATIONS[st], x, y: -35, name: STATION_NAMES[st], solid: true }); }
+  S(12, -36, T.COBBLE); O({ type: 'station', station: 'stove', job: 'cook', x: 12, y: -36, name: 'Royal Kitchen Stove', solid: true });
+  O({ type: 'desk', x: -3, y: -40, name: 'Steward\'s Desk', solid: true, who: 'steward' });
+  O({ type: 'desk', x: 2, y: -40, name: 'Tax Table', solid: true, who: 'treasurer' });
+  // towers, portcullises, torches
+  for (const [x, y] of [[C.x0, C.y0], [C.x1 - 1, C.y0], [C.x0, C.y1 - 1], [C.x1 - 1, C.y1 - 1], [-3, -24], [2, -24], [-3, C.innerY], [2, C.innerY], [C.x0, C.sallyY - 3], [C.x0, C.sallyY + 2], [C.x1 - 1, C.sallyY - 3], [C.x1 - 1, C.sallyY + 2]])
+    O({ type: 'turret', x, y, w: 2, h: 2, name: 'Tower', decor: true });
+  O({ type: 'portcullis', x: -1, y: -24, w: 3, name: 'Gatehouse', decor: true }); O({ type: 'portcullis', x: -1, y: C.innerY, w: 3, name: 'Inner Gate', decor: true });
+  for (const [x, y] of [[-2, -26], [2, -26], [-2, -40], [2, -38], [-22, -33], [22, -33], [-2, -45], [2, -45], [-2, -50], [2, -50], [-12, -36], [12, -33], [-14, -45], [14, -45]]) m.lights.push({ x: (cx + x + 0.5) * CFG.TILE, y: (cy + y + 0.5) * CFG.TILE, r: 160, torch: true });
+  // the inner bailey is closed until you hold the Inner Bailey Pass
+  m.gates = [{ id: 'inner', name: 'the inner bailey', x0: cx + C.inner.x0 - 1, x1: cx + C.inner.x1 + 1, y0: cy + C.inner.y0 - 1, y1: cy + C.innerY + 1, need: 1, backX: cx, backY: cy + C.outer.y0 + 1 }];
+}
+// ---------- interiors: ASCII layouts -> GameMap ----------
+const INTERIOR_LAYOUTS = {
+  keep: [
+    "#####################################",
+    "#,c,c,c,#,,,b,,,,,,,,,,,b,,,#.BB..bb#",
+    "#,,,,,,,#,,,,,,,,t=t,,,,,,,,#.......#",
+    "#,,,,,,,#,l,,,,,,===,,,,,,l,#.......#",
+    "#,,,k,,,#,,,,,,,,===,,,,,,,,#.......#",
+    "#,,,,,,,,,,,,,,,,===,,,,,,,,....TT..#",
+    "#,,,,,,,#,,,,,,,,===,,,,,,,,#.......#",
+    "#,c,,,c,#,l,,,,,,===,,,,,,l,#h.....l#",
+    "#,,,,,,,#,,,,,,,,===,,,,,,,,#.......#",
+    "#########,,,,,,,,===,,,,,,,,#########",
+    "#,,,|,,^#,,,,,,,,===,,,,,,,,#.......#",
+    "#,,p|,,,#,l,,,,,,===,,,,,,l,#......B#",
+    "#,,,|,,,#,,,,,,,,===,,,,,,,,#.......#",
+    "####|,,,#,,,,,,,,===,,,,,,,,#......B#",
+    "#,,,|,,,#########,,,#########.......#",
+    "#,,,|,,,#,,,,,,,,===,,,,,,,,#......B#",
+    "#,,,|,,,#,l,,,,,,===,,,,,,l,#.......#",
+    "####|,,,#,,,,,,,,===,,,,,,,,#.......#",
+    "#,,,|,,,#,,,,,,,,===,,,,,,,,#...T...#",
+    "#,,p|,,,#,,,,,,,,===,,,,,,,,#.......#",
+    "#,,,|,,,,,l,,,,,,===,,,,,,l,........#",
+    "####|,,,#,,,,,,,,===,,,,,,,,#.......#",
+    "#,,,|,,,#,,,,,,,,===,,,,,,,,#.......#",
+    "#,,,|,,,#,,,,,,,,===,,,,,,,,#.......#",
+    "#,,,|,x,#,l,,,,,,===,,,,,,l,#.xx..x.#",
+    "####|,,,#,,,x,,,,=S=,,,,x,,,#.......#",
+    "##################E##################",
+  ],
+  greathall: [
+    "###############################",
+    "#h..l.....................l..h#",
+    "#.............................#",
+    "#.....TTTTTTTTTTTTTTTTTTT.....#",
+    "#.............===.............#",
+    "#.............===.............#",
+    "#..TTTTTTTTT..===..TTTTTTTTT..#",
+    "#l............===............l#",
+    "#.............===.............#",
+    "#..TTTTTTTTT..===..TTTTTTTTT..#",
+    "#l............===............l#",
+    "#.............===.............#",
+    "#..TTTTTTTTT..===..TTTTTTTTT..#",
+    "#l............===............l#",
+    "#.............===.............#",
+    "#xx...........=S=............x#",
+    "###############E###############",
+  ],
+  magetower: [
+    "###############",
+    "###bbb...bbb###",
+    "##.....l.....##",
+    "#.............#",
+    "#.............#",
+    "#.....ooo.....#",
+    "#b....ooo....b#",
+    "#.....ooo.....#",
+    "#.............#",
+    "#.a.........T.#",
+    "#.............#",
+    "##.....S.....##",
+    "#######E#######",
+  ],
+  lists: [
+    "################################",
+    "#gxgxgxgxgxgxgxgxgxgxgxgxgxgxgg#",
+    "#gggggggggggggggggggggggggggggg#",
+    "#ggFFFFFFFFFFFFFFFFFFFFFFFFFFgg#",
+    "#ggFssssssssssssssssssssssssFgg#",
+    "#ggFssssssssssssssssssssssssFgg#",
+    "#ggFssssssssssssssssssssssssFgg#",
+    "#ggFssssssssssssssssssssssssFgg#",
+    "#ggFssssssssssssssssssssssssFgg#",
+    "#ggFssssssssssssssssssssssssFgg#",
+    "#ggFssssssssssssssssssssssssFgg#",
+    "#ggFssssssssssssssssssssssssFgg#",
+    "#ggFssssssssssssssssssssssssFgg#",
+    "#ggFssssssssssssssssssssssssFgg#",
+    "#ggFssssssssssssssssssssssssFgg#",
+    "#ggFFFFFFFFFFFFssFFFFFFFFFFFFgg#",
+    "#gggggggggggggggggggggggggggggg#",
+    "#ggggggggggggggSggggggggggggggg#",
+    "#gggggggggggggggggggggggggggggg#",
+    "###############E################",
+  ],
+};
+const INTERIOR_LEGEND = { '#': T.SWALL, '.': T.FLOOR, ',': T.SFLOOR, '=': T.CARPET, s: T.SAND, g: T.GRASS, F: T.FENCE, ' ': T.VOID };
+// char -> [kind, name, solid]. Kinds with an INTERIOR_ACTIONS handler can be clicked.
+const INTERIOR_OBJS = { T: ['table', 'Table', 1], h: ['hearth', 'Hearth', 1], l: ['candles', 'Candelabra', 1], t: ['throne', 'Throne', 1], b: ['shelf', 'Bookshelf', 1], c: ['coffer', 'Royal Coffer', 1],
+  B: ['bed', 'Bed', 1], '|': ['bars', 'Iron Bars', 1], p: ['prisoner', 'Prisoner', 1], a: ['lectern', 'Arcane Lectern', 1], x: ['crate', 'Barrels', 1], o: ['circle', 'Arcane Circle', 0], k: ['desk', 'Counting Desk', 1], '^': ['stairs', 'Stairs', 0] };
+const INTERIORS = {
+  greathall: { name: 'The Great Hall', building: 'c_greathall', need: 1, enter: 'You step into the Great Hall. Banners hang from the rafters and the hearths roar.' },
+  keep: { name: 'The Keep', building: 'c_keep', need: 2, enter: 'The guards bow you through. The throne room lies ahead.',
+    gates: [{ name: 'the treasury', x0: 1, y0: 1, x1: 7, y1: 8, need: 3 }, { name: 'the royal solar', x0: 29, y0: 1, x1: 35, y1: 8, need: 3 }, { name: 'the cells', x0: 1, y0: 10, x1: 7, y1: 25, need: 3 }, { name: 'the guard room', x0: 29, y0: 10, x1: 35, y1: 25, need: 3 }] },
+  magetower: { name: 'The Mage Tower', building: 'c_tower', need: 1, enter: 'Books drift lazily between the shelves. The air tingles.' },
+  lists: { name: 'The King\'s Lists', building: null, need: 0, arena: true, enter: 'The crowd roars as you step onto the sand.' },
+};
+function genInterior(id) {
+  const S = INTERIORS[id], rows = INTERIOR_LAYOUTS[id], H = rows.length, W = rows[0].length, m = new GameMap(id, W, H);
+  m.name = S.name; m.interior = true; m.zone.fill(0); m.fog.fill(1); m.fixedLevel = 1;
+  const floors = '.,=sg';
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const ch = rows[y][x] || '#'; let t = INTERIOR_LEGEND[ch];
+    if (t === undefined) { const nb = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([a, b]) => (rows[y + b] || '')[x + a]).filter(c => c && floors.includes(c)); t = INTERIOR_LEGEND[nb[0] || '.']; }
+    m.set(x, y, t);
+    if (ch === 'S') m.spawn = { x: x + 0.5, y: y + 0.5 };
+    else if (ch === 'E') { m.set(x, y, T.SFLOOR); m.addObj({ type: 'portal', x, y, to: 'world', name: 'Leave', solid: true, exit: true }); }
+    else if (INTERIOR_OBJS[ch]) { const [kind, name, solid] = INTERIOR_OBJS[ch]; m.addObj({ type: 'decor', kind, x, y, name, solid: !!solid });
+      if (kind === 'hearth' || kind === 'candles') m.lights.push({ x: (x + 0.5) * CFG.TILE, y: (y + 0.5) * CFG.TILE, r: kind === 'hearth' ? 220 : 150, torch: true }); }
+  }
+  m.gates = (S.gates || []).map(g => Object.assign({}, g));
+  return m;
+}
+// a closed gate the player may not pass (null if free to walk)
+function gateAt(m, px, py) {
+  if (!m || !m.gates || !m.gates.length) return null; const tx = Math.floor(px / CFG.TILE), ty = Math.floor(py / CFG.TILE), pass = royalPass();
+  for (const g of m.gates) if (tx >= g.x0 && tx <= g.x1 && ty >= g.y0 && ty <= g.y1 && pass < g.need) return g;
+  return null;
+}
+
 // ===== 05_player.js =====
 // ---------- player ----------
 function xpToNext(l) { return Math.round(CFG.XP_BASE * Math.pow(l, CFG.XP_EXP)); }
@@ -1370,7 +1627,8 @@ function damagePlayer(amount, type, src) {
   if (src && src.mods) rareOnHit(src, a);
 }
 function playerDie(src) {
-  const P = G.player; P.hp = 0; G.dead = true; P.deaths++;
+  const P = G.player; if (P.map === 'lists' && G.tourney) { P.hp = 1; G.tourney.yielded = true; return; } // the Marshal calls the bout: no death in the Lists
+  P.hp = 0; G.dead = true; P.deaths++;
   const lost = Math.floor(P.gold * CFG.DEATH_GOLD_LOSS); P.gold -= lost;
   for (const sl of SLOTS) { const it = P.equip[sl]; if (it) it.dur = Math.max(0, it.dur - it.maxDur * CFG.DEATH_DURABILITY_LOSS); }
   recalc(P);
@@ -1424,7 +1682,7 @@ function steer(m, e, tx, ty, spd, dt, r) {
   if (e.repathT > 0) e.repathT -= dt;
   return false;
 }
-function inTown(m, x, y, pad = 0) { return m.id === 'world' && m.town && dist(x / CFG.TILE, y / CFG.TILE, m.town.x, m.town.y) < CFG.TOWN_RADIUS + pad; }
+function inTown(m, x, y, pad = 0) { return m.id === 'world' && !!m.town && (dist(x / CFG.TILE, y / CFG.TILE, m.town.x, m.town.y) < CFG.TOWN_RADIUS + pad || inCastle(m, x, y, Math.min(pad, 4))); }
 function targetPos(mo) { if (mo.target === 'player') return G.player; return mo.target; }
 function updateMonster(m, mo, dt) {
   const P = G.player;
@@ -1451,10 +1709,10 @@ function updateMonster(m, mo, dt) {
   if (mo.state === 'idle' || mo.state === 'raid') {
     if (!G.dead && !P.stealth && pd < (mo.state === 'raid' ? 90 : aggroR) && !mo.def.passive && P.map === m.id && (mo.raid || !inTown(m, P.x, P.y, 1))) { mo.state = 'chase'; mo.target = 'player'; }
     else if (m.id === 'world' && mo.state === 'raid' || !mo.def.passive && m.id === 'world' && chance(dt * 2)) { // look for townsfolk
-      let best = null, bd = mo.state === 'raid' ? 400 : aggroR * 0.7; for (const n of G.npcs) { if (n.hidden || n.ko || (!mo.raid && inTown(m, n.x, n.y, 2))) continue; const d = dist(n.x, n.y, mo.x, mo.y); if (d < bd) { bd = d; best = n; } }
+      let best = null, bd = mo.state === 'raid' ? 400 : aggroR * 0.7; for (const n of G.npcs.concat(G.court ? G.court.filter(c => c.guard && c.map === 'world') : [])) { if (n.hidden || n.ko || (!mo.raid && inTown(m, n.x, n.y, 2))) continue; const d = dist(n.x, n.y, mo.x, mo.y); if (d < bd) { bd = d; best = n; } }
       if (best) { mo.state = 'chase'; mo.target = best; }
     }
-    if (mo.state === 'raid' && mo.state !== 'chase') { steer(m, mo, m.town.x * CFG.TILE, m.town.y * CFG.TILE, spd * 0.8, dt, mo.size * 0.6); return; }
+    if (mo.state === 'raid' && mo.state !== 'chase') { if (mo.route && mo.route.length) { const [rx, ry] = mo.route[0], wx = (rx + 0.5) * CFG.TILE, wy = (ry + 0.5) * CFG.TILE; mo.routeT = (mo.routeT || 0) + dt; if (mo.routeT > 14 && !m.solidPx(wx, wy)) { mo.x = wx; mo.y = wy; } if (dist(mo.x, mo.y, wx, wy) < 40) { mo.route.shift(); mo.path = null; mo.routeT = 0; } else steer(m, mo, wx, wy, spd * 0.8, dt, mo.size * 0.6); return; } steer(m, mo, m.town.x * CFG.TILE, m.town.y * CFG.TILE, spd * 0.8, dt, mo.size * 0.6); return; }
     if (mo.state === 'idle') { mo.wanderT -= dt; if (mo.wanderT <= 0) { mo.wanderT = randf(2, 6); mo.wx = mo.spawnX + randf(-70, 70); mo.wy = mo.spawnY + randf(-70, 70); if (inTown(m, mo.wx, mo.wy, 4)) { mo.wx = mo.spawnX; mo.wy = mo.spawnY; } } steer(m, mo, mo.wx, mo.wy, spd * 0.35, dt, mo.size * 0.6); }
     return;
   }
@@ -1509,12 +1767,12 @@ function killMonster(mo) {
   if (mo.bossId === 'warden') log('The Hollow Warden crumbles to dust. The crypt falls silent.', 'gold');
 }
 function hurtNpc(n, dmg, src) {
-  if (n.ko || n.hidden) return; n.hp -= Math.round(dmg * randf(0.85, 1.15) * (n.job === 'guard' ? 0.5 : 1)); n.hitFlash = 0.12;
-  if (n.job !== 'guard' && n.state !== 'flee') { n.state = 'flee'; n.path = null; npcSay(n, pick(NPC_LINES.flee)); }
+  if (n.ko || n.hidden) return; n.hp -= Math.round(dmg * randf(0.85, 1.15) * (n.job === 'guard' || n.guard ? 0.5 : 1)); n.hitFlash = 0.12;
+  if (n.job !== 'guard' && !n.guard && n.state !== 'flee') { n.state = 'flee'; n.path = null; npcSay(n, pick(NPC_LINES.flee)); }
   if (n.hp <= 0) { n.ko = true; n.hidden = true; log(`${n.name} was knocked out by ${src.name}! They will recover at home by morning.`, 'warn'); }
 }
 // ---- spawning ----
-function zoneLevelAt(m, tx, ty) { return 1 + Math.max(0, dist(tx, ty, m.town.x, m.town.y) - CFG.TOWN_RADIUS) * CFG.ZONE_LEVEL_PER_TILE; }
+function zoneLevelAt(m, tx, ty) { return 1 + Math.max(0, zoneDist(tx - m.town.x, ty - m.town.y) - CFG.TOWN_RADIUS) * CFG.ZONE_LEVEL_PER_TILE; }
 function spawnTick(m) {
   if (m.id !== 'world') return;
   const P = G.player; const ptx = P.x / CFG.TILE, pty = P.y / CFG.TILE;
@@ -1526,7 +1784,7 @@ function spawnTick(m) {
     const a = rand() * Math.PI * 2, r = randf(CFG.SPAWN_RADIUS_MIN, CFG.SPAWN_RADIUS_MAX);
     const tx = Math.floor(ptx + Math.cos(a) * r), ty = Math.floor(pty + Math.sin(a) * r);
     if (m.solidAt(tx, ty)) continue; const z = m.zoneAt(tx, ty); if (!z.monsters.length) continue;
-    if (dist(tx, ty, m.town.x, m.town.y) < CFG.TOWN_RADIUS + 12) continue;
+    if (dist(tx, ty, m.town.x, m.town.y) < CFG.TOWN_RADIUS + 12 || inCastleRel(tx - m.town.x, ty - m.town.y, 6)) continue;
     let poiNear = false; for (const p of Object.values(m.pois)) if (dist(p.x, p.y, tx, ty) < (p.lair ? 14 : 7)) poiNear = true; if (poiNear) continue;
     const table = night ? z.monsters.concat(z.night, z.night) : z.monsters;
     const key = pick(table); const lvl = zoneLevelAt(m, tx, ty) + randi(-1, 1);
@@ -1543,7 +1801,7 @@ function spawnTick(m) {
   if (night && P.map === 'world' && P.level >= 4) { G.raidT = (G.raidT || 60) - 1; if (G.raidT <= 0) { G.raidT = randf(90, 160); if (chance(0.45)) startRaid(m); } }
 }
 function startRaid(m) {
-  const g = pick([[0, -1], [0, 1], [1, 0], [-1, 0]]); const R = CFG.TOWN_RADIUS + 16;
+  const g = pick([[0, -1], [0, 1], [1, 0], [-1, 0]]); if (g[1] === -1 && m.castle) return startCastleRaid(m); const R = CFG.TOWN_RADIUS + 16;
   const gx = m.town.x + g[0] * R, gy = m.town.y + g[1] * R; const tbl = ['goblin', 'shade', 'wolf', 'skeleton', 'bandit'];
   const n = randi(2, 4); const key = pick(tbl);
   for (let k = 0; k < n; k++) { const mo = makeMonster(key, 2 + G.player.level * 0.5, (gx + 0.5) * CFG.TILE + randf(-40, 40), (gy + 0.5) * CFG.TILE + randf(-40, 40), { raid: true }); mo.state = 'raid'; if (!m.solidPx(mo.x, mo.y)) m.monsters.push(mo); }
@@ -1877,13 +2135,13 @@ function npcDesired(n) {
 function tileCenter(tx, ty) { return [(tx + 0.5) * CFG.TILE, (ty + 0.5) * CFG.TILE]; }
 function pickWorkSpot(n, m) {
   const b = id => m.buildings.find(x => x.id === id);
-  const ring = (kind) => { const c = m.objects.filter(o => o.type === 'node' && o.kind === kind && o.tier === 0 && dist(o.x, o.y, m.town.x, m.town.y) < 40); return c.length ? pick(c) : null; };
+  const ring = (kind) => { const c = m.objects.filter(o => o.type === 'node' && o.kind === kind && o.tier === 0 && dist(o.x, o.y, m.town.x, m.town.y) < 40 && !inCastleRel(o.x - m.town.x, o.y - m.town.y, 3)); return c.length ? pick(c) : null; };
   const stand = (bb) => bb.stationX !== undefined ? [bb.stationX + (bb.door === 'e' || bb.door === 'w' ? 0 : -1), bb.stationY + (bb.door === 'e' || bb.door === 'w' ? -1 : 0)] : [bb.outX, bb.outY + (bb.door === 's' ? 1 : -1)];
   switch (n.job) {
     case 'guard': { const R = CFG.TOWN_RADIUS - 2; const pts = [[0, -R], [0, R], [R, 0], [-R, 0], [0, 0], [-6, -6], [6, 6]]; const p = pick(pts); return { tx: m.town.x + p[0] + randi(-1, 1), ty: m.town.y + p[1] + randi(-1, 1), work: 'patrol', dur: randf(10, 25) }; }
     case 'miner': case 'woodcutter': case 'herbalist': { const node = ring({ miner: 'ore', woodcutter: 'tree', herbalist: 'herb' }[n.job]); if (node && n.workCycles % 4 !== 3) return { tx: node.x, ty: node.y + 1, work: 'gather', dur: randf(18, 35), node }; const mk = b('market'); return { tx: mk.outX, ty: mk.outY + 1, work: 'sell', dur: 8 }; }
     case 'fisher': { const d = m.pois.dock; return { tx: d.x + randi(3, 6), ty: d.y + randi(0, 1), work: 'fish', dur: randf(25, 50) }; }
-    case 'hunter': { const a = rand() * 6.28; return { tx: Math.round(m.town.x + Math.cos(a) * 30), ty: Math.round(m.town.y + Math.sin(a) * 30), work: 'hunt', dur: randf(10, 20) }; }
+    case 'hunter': { const a = rand() * 6.28; let hx = Math.round(Math.cos(a) * 30), hy = Math.round(Math.sin(a) * 30); if (inCastleRel(hx, hy, 3)) hy = -hy; return { tx: m.town.x + hx, ty: m.town.y + hy, work: 'hunt', dur: randf(10, 20) }; }
     case 'farmer': { const p = pick(m.plots); return { tx: p.x, ty: p.y + 1, work: 'farm', dur: randf(10, 20), plot: p }; }
     case 'blacksmith': { const s = stand(b('smithy')); return { tx: s[0], ty: s[1], work: 'craft', dur: 30 }; }
     case 'cook': { const s = stand(b('inn')); return { tx: s[0], ty: s[1], work: 'craft', dur: 30 }; }
@@ -1894,11 +2152,11 @@ function pickWorkSpot(n, m) {
     case 'priest': { const c = b('chapel'); return { tx: c.outX + 1, ty: c.outY + randi(-1, 1), work: 'pray', dur: 30 }; }
     case 'elder': return { tx: m.town.x - 3 + randi(-1, 1), ty: m.town.y - 3 + randi(-1, 1), work: 'idle', dur: 30 };
     case 'bard': return { tx: m.town.x + randi(-4, 4), ty: m.town.y + randi(-4, 4), work: 'sing', dur: 20 };
-    default: { const bb = pick(m.buildings.filter(x => !x.house)); return { tx: bb.outX, ty: bb.outY + (bb.door === 's' ? 1 : bb.door === 'n' ? -1 : 0), work: 'haul', dur: randf(5, 12) }; }
+    default: { const bb = pick(m.buildings.filter(x => !x.house && !x.stone)); return { tx: bb.outX, ty: bb.outY + (bb.door === 's' ? 1 : bb.door === 'n' ? -1 : 0), work: 'haul', dur: randf(5, 12) }; }
   }
 }
 function pickLeisure(n, m, act) {
-  if (act === 'shop') { const bb = pick(m.buildings.filter(x => x.services && x.services.some(s => s.startsWith('shop')))); return { tx: bb.outX + randi(-1, 1), ty: bb.outY + (bb.door === 's' ? 1 : bb.door === 'n' ? -1 : 0), dur: randf(10, 25) }; }
+  if (act === 'shop') { const bb = pick(m.buildings.filter(x => !x.stone && x.services && x.services.some(s => s.startsWith('shop')))); return { tx: bb.outX + randi(-1, 1), ty: bb.outY + (bb.door === 's' ? 1 : bb.door === 'n' ? -1 : 0), dur: randf(10, 25) }; }
   if (chance(0.5)) { const inn = m.buildings.find(b => b.id === 'inn'); return { tx: inn.outX + randi(-2, 2), ty: inn.outY + randi(1, 2), dur: randf(15, 40) }; }
   return { tx: m.town.x + randi(-5, 5), ty: m.town.y + randi(-5, 5), dur: randf(10, 30) };
 }
@@ -2044,7 +2302,7 @@ function handInQuest(n) {
   addAffinity(n, q.aff, 'favor done'); UI.dirty = true;
 }
 function abandonQuest(n) { const P = G.player; delete P.npcQ[n.id]; npcInfo(n.id).qDay = gameDay(); addAffinity(n, -2); log(`You let ${n.name} down.`, 'warn'); }
-function onKillForQuests(mo) { for (const q of activeQuests()) if (q.kind === 'slay' && q.mon === mo.key && q.have < q.need) { q.have++; if (q.have === q.need) { const n = G.npcs.find(x => x.id === q.from); log(`Favor complete: ${q.title}. Go see ${n ? n.name : 'them'}.`, 'gold'); } } }
+function onKillForQuests(mo) { for (const q of activeQuests()) if (q.kind === 'slay' && q.mon === mo.key && q.have < q.need) { q.have++; if (q.have === q.need) { const n = allNpcs().find(x => x.id === q.from); log(`Favor complete: ${q.title}. Go see ${n ? n.name : 'them'}.`, 'gold'); } } }
 function giveGift(n, id) {
   const P = G.player, info = npcInfo(n.id); if (info.giftDay === gameDay()) return log(`${n.name} has already had a gift today.`, 'warn');
   if (!invRemove(P.inv, id, 1)) return; info.giftDay = gameDay();
@@ -2056,6 +2314,340 @@ function npcMarker(n) { if (n.trainer || n.hidden) return null; const q = npcQue
 // ---- party groundwork (recruiting is a future feature) ----
 Party.eligible = function (n) { const P = G.player; return !!(n.recruitable && (P.affinity[n.id] || 0) >= CFG.RECRUIT_AFFINITY && npcInfo(n.id).favors >= CFG.RECRUIT_FAVORS); };
 Party.canRecruit = function (n) { return !!(CFG.PARTY_ENABLED && Party.eligible(n) && G.player.party.length < Party.MAX); };
+
+// ===== 07c_court.js =====
+// ============================================================
+// v1.3 THE ROYAL COURT: courtiers on daily schedules (inside and outside
+// the castle), royal guards, Royal Standing + earned access, the royal
+// quest chain, court favors, feasts, the weekly tournament and the library.
+// ============================================================
+const WEEKDAYS = ['Moonday', 'Tiwsday', 'Wodensday', 'Thornsday', 'Freyday', 'Starday', 'Sunday'];
+function weekday(d = gameDay()) { return ((d % 7) + 7) % 7; }
+function gameWeek() { return Math.floor(gameDay() / 7); }
+function daysUntil(wd) { return (wd - weekday() + 7) % 7; }
+function feastNight() { const h = hour(); return weekday() === CFG.FEAST_WEEKDAY && h >= 18 && h < 23; }
+function tourneyOpen() { const h = hour(); return weekday() === CFG.TOURNEY_WEEKDAY && h >= 9 && h < 17; }
+// ---- Royal Standing and access ----
+function royal() { const P = G.player; if (!P.royal) P.royal = { standing: 0, pass: 0, courtFavors: 0, chain: 0, cqActive: false, books: [], feastWeek: -1, tourneyWeek: -1, tourneyWins: 0, writWeek: -1, raidNight: -1, raidStand: 0, raidKills: 0, blessDay: -1, mealDay: -1, drillDay: -1, lecternDay: -1, title: '' }; return P.royal; }
+function royalPass() { return G.player ? royal().pass : 0; }
+const ROYAL_PASS_NAMES = ['Commoner: outer bailey only', 'Inner Bailey Pass', 'Audience with the King', 'Freedom of the Keep'];
+const STANDING_TIERS = [[0, 'Unknown at Court'], [10, 'Known at Court'], [30, 'Trusted'], [60, 'Favoured'], [90, 'Champion of the Crown']];
+function standingTier(s) { let t = STANDING_TIERS[0][1]; for (const [n, x] of STANDING_TIERS) if (s >= n) t = x; return t; }
+function addStanding(n, why) { const R = royal(); const b = R.standing; R.standing = clamp(R.standing + n, 0, 100); if (R.standing === b) return;
+  chat('system', `Royal Standing ${n > 0 ? '+' : ''}${n} (${esc(why)}). Now ${R.standing}/100.`, 'gold');
+  if (standingTier(R.standing) !== standingTier(b)) log(`The court now counts you as: ${standingTier(R.standing)}.`, 'gold');
+  const st = chainStep(); if (st && st.done && st.done(R) && !st.item) log(`Royal task ready: "${st.title}". Speak with ${courtName(st.giver)}.`, 'gold'); UI.dirty = true; }
+// what you still need for the next level of access (shown in the journal, guards and the Steward)
+function accessHint() { const R = royal();
+  if (R.pass < 1) return `Do ${CFG.ROYAL_PASS_FAVORS} favors for courtiers in the outer bailey (${Math.min(R.courtFavors, CFG.ROYAL_PASS_FAVORS)}/${CFG.ROYAL_PASS_FAVORS} done), then see the Steward at her desk by the inner gate. She grants the Inner Bailey Pass.`;
+  if (R.pass < 2) return `Raise your Royal Standing to ${CFG.ROYAL_AUDIENCE_STANDING} (now ${R.standing}), then ask the Steward for an audience with the King.`;
+  if (R.pass < 3) return `Serve the King: finish his charges (see the Journal) and reach Royal Standing ${CFG.ROYAL_FREEDOM_STANDING} (now ${R.standing}) to earn Freedom of the Keep.`;
+  return 'You hold Freedom of the Keep. Every door in the castle is open to you.'; }
+// ---- the royal quest chain ----
+const ROYAL_CHAIN = [
+  { id: 'door', giver: 'steward', title: 'A Foot in the Door', desc: () => `Do ${CFG.ROYAL_PASS_FAVORS} favors for courtiers (look for a "!" in the outer bailey).`, prog: R => `${Math.min(R.courtFavors, CFG.ROYAL_PASS_FAVORS)}/${CFG.ROYAL_PASS_FAVORS} favors`, done: R => R.courtFavors >= CFG.ROYAL_PASS_FAVORS,
+    reward: R => { R.pass = Math.max(R.pass, 1); addStanding(5, 'Inner Bailey Pass'); log('You receive the Inner Bailey Pass. The guards at the inner gate will let you through.', 'gold'); }, rewardText: 'Inner Bailey Pass', line: 'Everyone wants something from the Crown. Show me you give before you take. Help a few of the household and we will talk.' },
+  { id: 'useful', giver: 'steward', title: 'Make Yourself Useful', desc: () => `Raise your Royal Standing to ${CFG.ROYAL_AUDIENCE_STANDING}. Court favors, the Thornsday tournament and defending the gates at night all count.`, prog: R => `Standing ${R.standing}/${CFG.ROYAL_AUDIENCE_STANDING}`, done: R => R.standing >= CFG.ROYAL_AUDIENCE_STANDING,
+    reward: R => { R.pass = Math.max(R.pass, 2); log('The Steward has arranged an audience. The King receives petitioners in the throne room (in the Keep) from 9 to 12 and 14 to 17.', 'gold'); }, rewardText: 'An audience with the King', line: 'The King has no time for strangers. Earn a name here first.' },
+  { id: 'audience', giver: 'king', title: 'An Audience with the King', desc: () => 'Go to the throne room in the Keep (inner bailey) and speak with King Aldren.', done: R => true, auto: true,
+    reward: R => { addStanding(3, 'an audience with the King'); }, rewardText: 'The King\'s charge', line: 'So you are the one my Steward keeps writing about. Hm. Talk is cheap in my hall. Service is not.' },
+  { id: 'peace', giver: 'king', title: 'The King\'s Peace', desc: () => 'Kill 12 night raiders. They come at the town gates and the castle\'s sally ports after dark.', start: R => { R.raidBase = R.raidKills; }, prog: R => `${Math.min(12, R.raidKills - (R.raidBase || 0))}/12 raiders`, done: R => R.raidKills - (R.raidBase || 0) >= 12,
+    reward: R => { G.player.gold += 300; addStanding(12, 'the King\'s Peace'); }, rewardText: '300g, +12 standing', line: 'Raiders test my walls every night. A realm that cannot keep its gates is no realm. Thin them out.' },
+  { id: 'tithe', giver: 'king', title: 'The Tusk Tithe', desc: () => `Bring the King 1 Old Tusk's Ivory (Old Tusk, the boar king of Tusker Hollow, south-west). You also need Royal Standing ${CFG.ROYAL_FREEDOM_STANDING}.`, item: ['tusk_oldtusk', 1], prog: R => `Ivory ${Math.min(1, invCount(G.player.inv, 'tusk_oldtusk'))}/1 · Standing ${R.standing}/${CFG.ROYAL_FREEDOM_STANDING}`, done: R => invCount(G.player.inv, 'tusk_oldtusk') >= 1 && R.standing >= CFG.ROYAL_FREEDOM_STANDING,
+    reward: R => { R.pass = 3; invAdd(G.player.inv, 'royal_writ', 1); addStanding(8, 'the Tusk Tithe'); log('The King grants you Freedom of the Keep, and a Royal Commission for the Royal Forge.', 'gold'); }, rewardText: 'Freedom of the Keep + 1 Royal Commission', line: 'That boar has gored three of my foresters. Bring me his ivory and you may walk my halls as a friend of the Crown.' },
+  { id: 'ember', giver: 'king', title: 'Ember and Rime', desc: () => 'Defeat Kollgar the Forge-Bound at the bottom of Emberdeep Mine (far west).', start: R => { R.kollBase = (bossRec('kollgar') || { kills: 0 }).kills; }, prog: R => ((bossRec('kollgar') || { kills: 0 }).kills > (R.kollBase || 0) ? 'Kollgar defeated' : 'Kollgar still stands'), done: R => (bossRec('kollgar') || { kills: 0 }).kills > (R.kollBase || 0),
+    reward: R => { G.player.gold += 800; invAdd(G.player.inv, 'royal_writ', 2); addStanding(15, 'Ember and Rime'); }, rewardText: '800g, 2 Royal Commissions, +15 standing', line: 'Emberdeep paid a fifth of my treasury once. Now it pays in corpses. End Kollgar.' },
+  { id: 'rot', giver: 'king', title: 'The Rot at the Border', desc: () => 'Defeat the Rotmother at the Sunken Altar in the Blightmarsh (far south-east).', start: R => { R.rotBase = (bossRec('rotmother') || { kills: 0 }).kills; }, prog: R => ((bossRec('rotmother') || { kills: 0 }).kills > (R.rotBase || 0) ? 'The Rotmother defeated' : 'The Rotmother still lives'), done: R => (bossRec('rotmother') || { kills: 0 }).kills > (R.rotBase || 0),
+    reward: R => { G.player.gold += 1500; invAdd(G.player.inv, 'royal_writ', 2); R.title = 'Knight of Hearthvale'; addStanding(20, 'The Rot at the Border'); log('King Aldren names you Knight of Hearthvale!', 'gold'); sfx('level'); }, rewardText: '1500g, 2 Royal Commissions, the title Knight of Hearthvale', line: 'The marsh creeps closer each year. My grandfather burned it and it came back. Kill the thing at its heart.' },
+];
+function chainStep() { return ROYAL_CHAIN[royal().chain] || null; }
+function courtName(cid) { const n = (G.court || []).find(x => x.cid === cid); return n ? n.name : cid; }
+function chainTurnIn(n) { const R = royal(), st = chainStep(); if (!st || st.giver !== n.cid || !st.done(R)) return;
+  if (st.item) { if (!invRemove(G.player.inv, st.item[0], st.item[1])) return; }
+  st.reward(R); R.chain++; R.cqActive = false; gainXp(G.player, 40 + G.player.level * 12); log(`Royal task complete: ${st.title}.`, 'gold'); sfx('level');
+  const nx = chainStep(); if (nx && nx.giver === n.cid) { R.cqActive = true; if (nx.start) nx.start(R); } UI.dirty = true; }
+// ---- court favors pay better and ask more; finished ones raise Royal Standing ----
+const _genNpcQuestTown = genNpcQuest;
+genNpcQuest = function (n) {
+  if (!n.court) return _genNpcQuestTown(n);
+  const q = _genNpcQuestTown(Object.assign({}, n, { job: n.qjob || 'merchant' })); q.from = n.id;
+  q.need = Math.ceil(q.need * CFG.COURT_NEED_MULT); q.title = q.title.replace(/\d+/, q.need);
+  q.gold = Math.round(q.gold * CFG.COURT_GOLD_MULT * CFG.COURT_NEED_MULT); q.xp = Math.round(q.xp * CFG.COURT_XP_MULT * CFG.COURT_NEED_MULT); q.aff = q.aff + 2; q.court = true; q.standing = 6;
+  if (!q.bonus && chance(0.25)) q.bonus = 'royal_mead';
+  return q;
+};
+const _npcQuestTown = npcQuest;
+npcQuest = function (n) { if (n.noFavors) return null; return _npcQuestTown(n); };
+const _handInQuestTown = handInQuest;
+handInQuest = function (n) { const before = npcInfo(n.id).favors; _handInQuestTown(n);
+  if (n.court && npcInfo(n.id).favors > before) { const R = royal(); R.courtFavors++; addStanding(6, 'court favor for ' + n.name); } };
+// ---- the court ----
+// spots: world spots are tile offsets from the town centre; interior spots are interior tiles
+const COURT_SPOTS = {
+  steward_desk: [-3, -39], tax_table: [2, -39], gate_porter: [3, -27], forge_front: [6, -36], kitchen_front: [14, -37], stables_front: [-12, -37], mews_front: [-5, -37],
+  tiltyard: [-11, -30], garden_queen: [12, -27], garden_falconer: [-6, -34], chapel_front: [14, -50], tower_front: [21, -51], library_front: [-13, -46], keep_door: [3, -49],
+  inner_garden_king: [7, -47], inner_garden_queen: [8, -47], outer_walk: [4, -33], gate_constable: [3, -25], town_barracks: { b: 'barracks' },
+  sleep_lodgings: { b: 'c_lodgings', hide: true }, sleep_barracks: { b: 'c_barracks', hide: true }, sleep_chapel: { b: 'c_chapel', hide: true }, sleep_kitchens: { b: 'c_kitchens', hide: true },
+  sleep_stables: { b: 'c_stables', hide: true }, sleep_mews: { b: 'c_mews', hide: true },
+  throne_king: { map: 'keep', x: 17, y: 3 }, throne_queen: { map: 'keep', x: 19, y: 3 }, solar_king: { map: 'keep', x: 32, y: 4 }, solar_queen: { map: 'keep', x: 31, y: 6 },
+  solar_king_sleep: { map: 'keep', x: 30, y: 2, hide: true }, solar_queen_sleep: { map: 'keep', x: 31, y: 2, hide: true }, treasury: { map: 'keep', x: 4, y: 5 },
+  hall_king: { map: 'greathall', x: 14, y: 2 }, hall_queen: { map: 'greathall', x: 16, y: 2 }, hall_steward: { map: 'greathall', x: 11, y: 2 }, hall_constable: { map: 'greathall', x: 19, y: 2 },
+  hall_mage: { map: 'greathall', x: 21, y: 2 }, hall_chaplain: { map: 'greathall', x: 9, y: 2 }, hall_treasurer: { map: 'greathall', x: 23, y: 2 }, hall_cook: { map: 'greathall', x: 3, y: 14 },
+  hall_marshal: { map: 'greathall', x: 5, y: 7 }, hall_falconer: { map: 'greathall', x: 8, y: 7 }, hall_porter: { map: 'greathall', x: 22, y: 13 },
+  tower_mage: { map: 'magetower', x: 7, y: 4 }, sleep_tower: { map: 'magetower', x: 2, y: 4, hide: true },
+};
+// cid, name, title, race, look, quest job, schedule [[hour, spot]...], spot at feasts
+const COURT_DEFS = [
+  { cid: 'king', name: 'King Aldren III', title: 'King of Hearthvale', race: 'human', color: '#5a2a7a', hair: '#c8c0b0', crown: true, cape: '#8a1a2a', level: 40, noFavors: true,
+    sched: [[0, 'solar_king_sleep'], [7, 'solar_king'], [9, 'throne_king'], [12, 'hall_king'], [14, 'throne_king'], [17, 'inner_garden_king'], [19, 'hall_king'], [22, 'solar_king_sleep']], feast: 'hall_king' },
+  { cid: 'queen', name: 'Queen Seraphine', title: 'Queen of Hearthvale', race: 'elf', color: '#3a6a9a', hair: '#e8d090', crown: true, cape: '#2a4a8a', level: 32, noFavors: true,
+    sched: [[0, 'solar_queen_sleep'], [7, 'chapel_front'], [9, 'garden_queen'], [12, 'hall_queen'], [14, 'throne_queen'], [17, 'inner_garden_queen'], [19, 'hall_queen'], [22, 'solar_queen_sleep']], feast: 'hall_queen' },
+  { cid: 'steward', name: 'Steward Mirabel Ashdown', title: 'Royal Steward', race: 'human', color: '#4a5a3a', hair: '#5a3a20', qjob: 'merchant', level: 22,
+    sched: [[0, 'sleep_lodgings'], [7, 'steward_desk'], [12, 'hall_steward'], [13, 'steward_desk'], [18, 'hall_steward'], [21, 'sleep_lodgings']], feast: 'hall_steward' },
+  { cid: 'constable', name: 'Sir Roderic Vane', title: 'Constable of the Realm', race: 'human', color: '#3a4a6a', hair: '#888', qjob: 'guard', level: 34,
+    sched: [[0, 'sleep_barracks'], [6, 'gate_constable'], [10, 'town_barracks'], [12, 'hall_constable'], [13, 'outer_walk'], [17, 'gate_constable'], [19, 'hall_constable'], [21, 'sleep_barracks']], feast: 'hall_constable' },
+  { cid: 'treasurer', name: 'Treasurer Ilsabet Coyne', title: 'Royal Treasurer', race: 'halfling', color: '#7a6a2a', hair: '#2a1a10', qjob: 'merchant', level: 18,
+    sched: [[0, 'sleep_lodgings'], [8, 'treasury'], [11, 'tax_table'], [15, 'treasury'], [18, 'hall_treasurer'], [21, 'sleep_lodgings']], feast: 'hall_treasurer' },
+  { cid: 'courtmage', name: 'Magistra Isolde Wynter', title: 'Court Mage', race: 'elf', color: '#4a3a8a', hair: '#ddd', qjob: 'alchemist', level: 36,
+    sched: [[0, 'sleep_tower'], [8, 'tower_mage'], [15, 'tower_front'], [17, 'tower_mage'], [19, 'hall_mage'], [21, 'tower_mage'], [23, 'sleep_tower']], feast: 'hall_mage' },
+  { cid: 'chaplain', name: 'Father Anselm', title: 'Royal Chaplain', race: 'human', color: '#d8d0b0', hair: '#aaa', qjob: 'priest', level: 24,
+    sched: [[0, 'sleep_chapel'], [6, 'chapel_front'], [12, 'hall_chaplain'], [13, 'chapel_front'], [19, 'hall_chaplain'], [21, 'sleep_chapel']], feast: 'hall_chaplain' },
+  { cid: 'headcook', name: 'Brannagh Stout', title: 'Head Cook', race: 'dwarf', color: '#e8e0d0', hair: '#a04a20', qjob: 'cook', level: 14,
+    sched: [[0, 'sleep_kitchens'], [5, 'kitchen_front'], [11, 'hall_cook'], [13, 'kitchen_front'], [18, 'hall_cook'], [21, 'kitchen_front'], [22, 'sleep_kitchens']], feast: 'hall_cook' },
+  { cid: 'marshal', name: 'Marshal Hollis Brand', title: 'Marshal of the Stables', race: 'orc', color: '#6a4a2a', hair: '#222', qjob: 'hunter', level: 30,
+    sched: [[0, 'sleep_stables'], [6, 'stables_front'], [9, 'tiltyard'], [13, 'stables_front'], [19, 'hall_marshal'], [21, 'sleep_stables']], feast: 'hall_marshal' },
+  { cid: 'falconer', name: 'Wren Ashby', title: 'Falconer & Kennel Master', race: 'elf', color: '#5a6a3a', hair: '#8a5a2a', qjob: 'hunter', level: 20,
+    sched: [[0, 'sleep_mews'], [6, 'mews_front'], [10, 'garden_falconer'], [13, 'mews_front'], [19, 'hall_falconer'], [21, 'sleep_mews']], feast: 'hall_falconer' },
+  { cid: 'porter', name: 'Old Tobin', title: 'Porter of the Gate', race: 'halfling', color: '#7a5a4a', hair: '#ccc', qjob: 'woodcutter', level: 10,
+    sched: [[0, 'gate_porter']], feast: 'hall_porter' },
+];
+// royal guards stand posts (tile offsets from town centre); two walk patrols
+const ROYAL_GUARD_POSTS = [
+  { post: [-2, -41], name: 'Guardsman Edric' }, { post: [2, -41], name: 'Guardswoman Maren' }, { post: [-2, -26], name: 'Guardsman Ulf' }, { post: [2, -26], name: 'Guardswoman Tessa' },
+  { post: [-23, -30], name: 'Guardsman Bryn' }, { post: [23, -30], name: 'Guardsman Oswin' }, { post: [-2, -49], name: 'Guardswoman Kestrel' },
+  { post: [-20, -34], name: 'Guardsman Piers', patrol: [[-20, -34], [20, -34], [20, -30], [-20, -30]] },
+  { post: [-10, -45], name: 'Guardswoman Ysolde', patrol: [[-10, -45], [10, -45], [10, -48], [-10, -48]] },
+];
+function genCourt(m) {
+  const out = [];
+  for (const d of COURT_DEFS) out.push(Object.assign({ id: 'court_' + d.cid, uid: 'court_' + d.cid, court: true, job: d.cid, map: 'world', x: 0, y: 0, state: 'idle', hidden: false, chatT: 10 + rand() * 30, speed: 66, hp: 999, maxHp: 999, mood: 'dutiful', affinity: 0, recruitable: !d.noFavors, home: null }, d));
+  ROYAL_GUARD_POSTS.forEach((g, i) => out.push({ id: 'court_guard' + i, uid: 'court_guard' + i, court: true, guard: true, cid: 'royalguard', job: 'royalguard', title: 'Royal Guard', name: g.name, race: ['human', 'dwarf', 'human', 'orc', 'human', 'elf', 'human', 'dwarf', 'human'][i], color: '#7a1a2a', hair: '#3a2a1a',
+    level: 25, noFavors: true, map: 'world', post: g.post, patrol: g.patrol, pi: 0, x: (m.cx + g.post[0] + 0.5) * CFG.TILE, y: (m.cy + g.post[1] + 0.5) * CFG.TILE, state: 'idle', hidden: false, chatT: 20 + rand() * 40, speed: 70, hp: 900, maxHp: 900, mood: 'watchful', affinity: 0, combat: { atk: 60, def: 40 }, home: null }));
+  for (const n of out) if (n.guard) n.home = { outX: m.cx + n.post[0], outY: m.cy + n.post[1] };
+  return out;
+}
+function allNpcs() { return G.npcs.concat(G.court || []); }
+function buildingById(id) { return G.maps.world.buildings.find(b => b.id === id); }
+function courtSpot(key) { const s = COURT_SPOTS[key], w = G.maps.world; if (Array.isArray(s)) return { map: 'world', tx: w.cx + s[0], ty: w.cy + s[1] };
+  if (s.b) { const b = buildingById(s.b); return { map: 'world', tx: b.outX, ty: b.outY + (b.door === 's' ? 1 : b.door === 'n' ? -1 : 0), hide: s.hide }; }
+  return { map: s.map, tx: s.x, ty: s.y, hide: s.hide }; }
+function courtScheduleKey(n) { const h = hour(); if (feastNight() && n.feast) return n.feast; if (n.cid === 'marshal' && tourneyOpen()) return 'tiltyard';
+  let k = n.sched[0][1]; for (const [hh, s] of n.sched) if (h >= hh) k = s; return k; }
+function courtDoor(mapId) { const b = buildingById(INTERIORS[mapId].building); return [b.outX, b.outY]; }
+function courtPath(n, tx, ty) { const w = G.maps.world; n.path = findPath(w, Math.floor(n.x / CFG.TILE), Math.floor(n.y / CFG.TILE), tx, ty, 12000) || [[tx, ty]]; if (!n.path.length) n.path = null; }
+function courtTravel(n, sp) {
+  n.hidden = false; n.dest = sp; n.travelT = 0; n.state = 'commute';
+  if (n.map !== 'world') { if (n.map === sp.map) { n.x = (sp.tx + 0.5) * CFG.TILE; n.y = (sp.ty + 0.5) * CFG.TILE; return courtArrive(n); } const [dx, dy] = courtDoor(n.map); n.map = 'world'; n.x = (dx + 0.5) * CFG.TILE; n.y = (dy + 0.5) * CFG.TILE; }
+  if (sp.map === 'world') courtPath(n, sp.tx, sp.ty); else { const [dx, dy] = courtDoor(sp.map); courtPath(n, dx, dy); }
+  if (!n.path) courtArrive(n);
+}
+function courtArrive(n) { const sp = n.dest; n.path = null; n.travelT = undefined; n.state = 'busy'; n.moving = false;
+  if (!sp) return; n.map = sp.map; n.x = (sp.tx + 0.5) * CFG.TILE; n.y = (sp.ty + 0.5) * CFG.TILE; n.hidden = !!sp.hide; }
+function courtSnap(n) { n.goal = courtScheduleKey(n); n.dest = courtSpot(n.goal); courtArrive(n); }
+function updateCourt(n, dt) {
+  if (n.hitFlash > 0) n.hitFlash -= dt;
+  if (n.bubble) { n.bubble.t -= dt; if (n.bubble.t <= 0) n.bubble = null; }
+  if (n.guard) return updateRoyalGuard(n, dt);
+  const key = courtScheduleKey(n);
+  if (n.goal !== key) { n.goal = key; courtTravel(n, courtSpot(key)); }
+  if (n.map === 'world' && n.path && n.path.length) {
+    const [px, py] = n.path[0]; const [wx, wy] = tileCenter(px, py); const d = dist(n.x, n.y, wx, wy), spd = n.speed * dt;
+    if (d <= spd) { n.x = wx; n.y = wy; n.path.shift(); } else { n.x += (wx - n.x) / d * spd; n.y += (wy - n.y) / d * spd; n.facing = Math.atan2(wy - n.y, wx - n.x); }
+    n.moving = true; if (!n.path.length) courtArrive(n);
+  } else n.moving = false;
+  if (n.travelT !== undefined) { n.travelT += dt; if (n.travelT > 80) courtArrive(n); }
+  courtChatter(n, dt);
+}
+function courtChatter(n, dt) {
+  n.chatT -= dt; if (n.chatT > 0 || n.hidden) return; n.chatT = randf(20, 50); const P = G.player;
+  if (P.map !== n.map || dist(n.x, n.y, P.x, P.y) > 380) return;
+  let pool = NPC_LINES[n.job] || NPC_LINES.any; if (feastNight() && chance(0.5)) pool = NPC_LINES.feast; else if (n.cid === 'marshal' && tourneyOpen() && chance(0.6)) pool = NPC_LINES.tourney;
+  npcSay(n, pick(pool));
+}
+function updateRoyalGuard(n, dt) {
+  const w = G.maps.world, h = hour();
+  if (n.ko) { if (h >= 6 && h < 7) { n.ko = false; n.hidden = false; n.hp = n.maxHp; n.x = (w.cx + n.post[0] + 0.5) * CFG.TILE; n.y = (w.cy + n.post[1] + 0.5) * CFG.TILE; } return; }
+  if (n.hp < n.maxHp) n.hp = Math.min(n.maxHp, n.hp + n.maxHp * 0.02 * dt);
+  const px = (w.cx + n.post[0] + 0.5) * CFG.TILE, py = (w.cy + n.post[1] + 0.5) * CFG.TILE;
+  let foe = null, fd = 11 * CFG.TILE;
+  for (const mo of w.monsters) { if (mo.dead) continue; const d = dist(mo.x, mo.y, n.x, n.y); if (d < fd && dist(mo.x, mo.y, px, py) < 16 * CFG.TILE && (mo.raid || inCastle(w, mo.x, mo.y, 3))) { fd = d; foe = mo; } }
+  if (foe) {
+    if (n.state !== 'fight') { n.state = 'fight'; npcSay(n, pick(NPC_LINES.royalfight)); }
+    if (fd > foe.size + 22) steer(w, n, foe.x, foe.y, n.speed * 1.5, dt, 8);
+    else { n.atkCd = (n.atkCd || 0) - dt; n.facing = Math.atan2(foe.y - n.y, foe.x - n.x); if (n.atkCd <= 0) { n.atkCd = 1.1; n.atkAnim = 0.2; const d = Math.round(n.combat.atk * randf(0.85, 1.15)); foe.hp -= d; foe.hitFlash = 0.1; if (foe.lastHitBy !== 'player') foe.lastHitBy = 'npc'; addText(foe.x, foe.y - foe.size - 6, d, '#ddb', 11); if (foe.state !== 'chase' || (foe.target === 'player' && dist(foe.x, foe.y, G.player.x, G.player.y) > 200)) { foe.state = 'chase'; foe.target = n; } if (foe.hp <= 0) killMonster(foe); } }
+    n.moving = true; return;
+  }
+  if (n.state === 'fight') n.state = 'idle';
+  let tx = px, ty = py;
+  if (n.patrol) { const p = n.patrol[n.pi % n.patrol.length]; tx = (w.cx + p[0] + 0.5) * CFG.TILE; ty = (w.cy + p[1] + 0.5) * CFG.TILE; if (dist(n.x, n.y, tx, ty) < 8) { n.pi++; n.waitT = randf(2, 6); } }
+  if (n.waitT > 0) { n.waitT -= dt; n.moving = false; }
+  else if (dist(n.x, n.y, tx, ty) > 6) { steer(w, n, tx, ty, n.speed * (n.patrol ? 0.7 : 1), dt, 8); n.moving = true; } else n.moving = false;
+  courtChatter(n, dt);
+}
+function courtActivityText(n) {
+  if (n.guard) return n.state === 'fight' ? 'Fighting!' : n.patrol ? 'On patrol' : 'Standing guard';
+  if (n.state === 'commute') return 'Walking';
+  const k = n.goal || ''; if (k.startsWith('hall_')) return feastNight() ? 'Feasting in the Great Hall' : 'At supper in the Great Hall';
+  if (k.startsWith('throne')) return 'Holding court in the throne room'; if (k.includes('sleep')) return 'Sleeping'; if (k.startsWith('solar')) return 'In the royal solar';
+  return { steward_desk: 'At the Steward\'s desk', tax_table: 'Collecting taxes', treasury: 'Counting coin in the treasury', tiltyard: tourneyOpen() ? 'Running the tournament' : 'Exercising horses at the tiltyard', town_barracks: 'Visiting Captain Hale', tower_mage: 'Studying in the Mage Tower' }[k] || 'Going about court business';
+}
+// ---- raids: the castle's sally ports and gatehouse ----
+function startCastleRaid(m) {
+  const C = CASTLE, west = chance(0.5), sx = m.cx + (west ? C.x0 - 14 : C.x1 + 14), sy = m.cy + C.sallyY;
+  const tbl = ['goblin', 'shade', 'wolf', 'skeleton', 'bandit']; const key = pick(tbl); const n = randi(3, 5);
+  const route = [[m.cx + (west ? C.x0 - 3 : C.x1 + 3), sy], [m.cx + (west ? C.x0 + 3 : C.x1 - 3), sy], [m.cx, sy], [m.cx, m.cy + C.outer.y1], [m.cx, m.cy - CFG.TOWN_RADIUS + 1]];
+  for (let k = 0; k < n; k++) { const mo = makeMonster(key, 2 + G.player.level * 0.5, (sx + 0.5) * CFG.TILE + randf(-60, 60), (sy + 0.5) * CFG.TILE + randf(-26, 26), { raid: true }); mo.state = 'raid'; mo.route = route.map(p => p.slice()); if (!m.solidPx(mo.x, mo.y)) m.monsters.push(mo); }
+  log(`Raiders storm the castle's ${west ? 'west' : 'east'} sally port! The royal guard holds the gate.`, 'warn'); sfx('bell'); G.lastRaid = { castle: true, west, n };
+}
+function onRaidKill(mo) { const R = royal(); R.raidKills++; const night = Math.floor(G.time / CFG.DAY_LENGTH_SEC + 0.25);
+  if (R.raidNight !== night) { R.raidNight = night; R.raidStand = 0; }
+  if (R.raidStand < CFG.RAID_STANDING_PER_NIGHT) { R.raidStand++; addStanding(1, 'defending the realm'); } }
+const _killMonsterBase = killMonster;
+killMonster = function (mo) { const raid = mo.raid && !mo.dead, mine = mo.lastHitBy === 'player'; _killMonsterBase(mo); if (raid && mine && G.player) onRaidKill(mo); };
+// ---- the King's Lists (weekly tournament vs monsters, no PvP) ----
+function tourneyMonsters(lvl) { const d = (lvl - 1) / CFG.ZONE_LEVEL_PER_TILE + CFG.TOWN_RADIUS; const z = ZONES.find(zz => zz.maxD > d && zz.monsters && zz.monsters.length) || ZONES[1];
+  return z.monsters.filter(k => !MONSTERS[k].passive && !MONSTERS[k].boss && !MONSTERS[k].stationary); }
+function startTourney() {
+  const P = G.player, R = royal(); if (P.gold < 25) return log('The entry fee is 25g.', 'warn'); P.gold -= 25; R.tourneyWeek = gameWeek();
+  const w = G.maps.world, g = w.objects.find(o => o.type === 'lists_gate'); P.retPos = { x: (g.x + 0.5) * CFG.TILE, y: (g.y - 1 + 0.5) * CFG.TILE };
+  UI.close(); changeMap('lists'); G.tourney = { wave: 0, t: 4, done: false, yielded: false }; log('The herald cries your name. First bout in a few seconds!', 'gold'); sfx('bell');
+}
+function tourneyWave(m) {
+  const P = G.player, T0 = G.tourney, lvl = Math.max(2, P.level), keys = tourneyMonsters(lvl), at = k => [(8 + k * 5 + 0.5) * CFG.TILE, (6.5) * CFG.TILE];
+  const list = T0.wave === 1 ? [0, 1, 2].map(() => makeMonster(pick(keys), lvl, 0, 0, { noElite: true })) : T0.wave === 2 ? [0, 1].map(() => makeMonster(pick(keys), lvl + 1, 0, 0, { elite: true })) : [makeRare(makeMonster(pick(keys), lvl + 1, 0, 0, { noElite: true })), makeMonster(pick(keys), lvl, 0, 0, { elite: true })];
+  list.forEach((mo, k) => { [mo.x, mo.y] = at(k); mo.spawnX = mo.x; mo.spawnY = mo.y; mo.state = 'chase'; mo.target = 'player'; mo.tourney = true; m.monsters.push(mo); });
+  log(`Bout ${T0.wave} of 3: ${list.map(mo => mo.name).join(', ')}!`, 'warn'); sfx('bell');
+}
+function updateTourney(dt) {
+  const T0 = G.tourney, m = curMap(); if (!T0 || m.id !== 'lists') return;
+  if (T0.yielded) { G.tourney = null; G.dead = false; const P = G.player; P.hp = Math.max(1, Math.round(P.maxHp * 0.3)); log('You yield. The Marshal calls the bout and the crowd cheers your courage. (No death penalty in the Lists.)', 'warn'); m.monsters = []; changeMap('world'); return; }
+  if (T0.done) return;
+  if (m.monsters.some(mo => !mo.dead)) return;
+  T0.t -= dt; if (T0.t > 0) return;
+  if (T0.wave < 3) { T0.wave++; T0.t = 4; tourneyWave(m); return; }
+  T0.done = true; const P = G.player, R = royal(); R.tourneyWins = (R.tourneyWins || 0) + 1;
+  const gold = 60 + P.level * 15; P.gold += gold; gainXp(P, 60 + P.level * 20); invAdd(P.inv, 'tourney_ribbon', 1); addStanding(5, 'champion of the Lists');
+  if (chance(0.35)) m.drops.push({ x: P.x + 20, y: P.y, item: randomDrop(P.level + 1, P.luck, 0.8), t: 0, uid: uid() });
+  log(`CHAMPION! You win the King's Lists: +${gold}g and a Tourney Ribbon. Use the gate to leave.`, 'gold'); sfx('level');
+}
+// ---- feasts in the Great Hall ----
+function joinFeast() { const P = G.player, R = royal();
+  if (!feastNight()) return UI.dialog('Long Table', `<div class="dlg-line">Supper is served here every evening from 19:00. The great feast is every ${WEEKDAYS[CFG.FEAST_WEEKDAY]} from 18:00 to 23:00${daysUntil(CFG.FEAST_WEEKDAY) ? ` (in ${daysUntil(CFG.FEAST_WEEKDAY)} days)` : ''}.</div>`, [{ label: 'Close', fn: () => UI.close() }]);
+  if (R.feastWeek === gameWeek()) return log('You have already feasted this week. You could not eat another bite.', 'dim');
+  R.feastWeek = gameWeek(); addBuff(P, { id: 'fed', dur: 1200, regen: 8, stats: { vit: 10, str: 4, dex: 4, int: 4 } }); addBuff(P, { id: 'feast', dur: 1200, dmgMult: 0.06 });
+  P.hp = P.maxHp; P.mana = P.maxMana; addStanding(2, 'the royal feast');
+  for (const n of (G.court || []).filter(x => x.map === 'greathall' && !x.hidden && !x.guard)) addAffinity(n, 1);
+  log('You feast at the King\'s table! Well Fed and Feast-Fortified (+6% damage) for 20 minutes.', 'gold'); sfx('coin');
+}
+// ---- library ----
+function readBook(b) { const R = royal(); if (royalPass() < b.need) return log('That shelf is restricted. You need Freedom of the Keep.', 'warn');
+  const first = !R.books.includes(b.id); if (first) { R.books.push(b.id); gainXp(G.player, 20 + G.player.level * 4); }
+  UI.dialog(b.title, `<div class="dlg-line">${esc(b.text)}</div>${first ? '<div class="small gold">You learn something. (+XP)</div>' : ''}`, [{ label: 'Back to the shelves', fn: () => UI.library() }, { label: 'Close', fn: () => UI.close() }]); }
+// ---- clickable things inside interiors ----
+const PRISONER_LINES = ['"I only took one loaf. One!"', '"The marsh folk pay well for news of the King. Not that I\'d know."', '"Psst. Kollgar\'s core flickers before it changes. Saw it myself, before they caught me looting the mine."', '"They say the Rotmother\'s idols grow back. Smash \'em all, then hit her. Let me out and I\'ll show you."'];
+const INTERIOR_ACTIONS = {
+  prisoner: o => UI.dialog('A prisoner', `<div class="dlg-line">${esc(pick(PRISONER_LINES))}</div>`, [{ label: 'Leave them be', fn: () => UI.close() }]),
+  coffer: o => log('The royal coffers. A guard clears his throat. You keep your hands to yourself.', 'dim'),
+  table: o => curMap().id === 'greathall' ? joinFeast() : log('A sturdy oak table.', 'dim'),
+  shelf: o => UI.library(),
+  throne: o => log('The throne of Hearthvale. You decide not to sit in it.', 'dim'),
+  desk: o => { const n = (G.court || []).find(x => x.cid === 'treasurer' && x.map === curMap().id && !x.hidden); return n ? UI.npc(n) : log('The Treasurer\'s counting desk. Ledgers, wax and a very large lock.', 'dim'); },
+  lectern: o => { const R = royal(), P = G.player; if (R.lecternDay === gameDay()) return log('The lectern\'s glow has faded for today.', 'dim'); R.lecternDay = gameDay(); addBuff(P, { id: 'arcane', dur: 600, stats: { int: 6 }, addDmg: { arcane: 0.1 } }); log('You read the glowing page. Arcane Insight: +6 Int and +10% arcane damage for 10 min.', 'gold'); },
+};
+// ---- building services in the castle (door menus) ----
+const ROYAL_SERVICES = {
+  barracks: (b, btns) => { const P = G.player, R = royal(); btns.push({ label: R.drillDay === gameDay() ? 'Drilled today' : '⚔ Drill with the Royal Guard', disabled: R.drillDay === gameDay(), tt: 'Once a day. Guard job XP, or a little combat XP.', fn: () => { R.drillDay = gameDay(); if (P.jobs.guard) gainJobXp(P, 'guard', 25 + P.level * 3); gainXp(P, 10 + P.level * 4); log('You drill with the royal guard until your arms ache.', 'job'); UI.building(b); } });
+    return '<div>The royal guard sleeps and trains here. Sir Roderic Vane, the Constable, commands them and Captain Hale\'s town guard.</div>'; },
+  stables: (b, btns) => { btns.push({ label: '🐎 Buy a mount (coming in a later update)', disabled: true, fn: () => 0 }); return `<div>The royal horses. Marshal Hollis Brand also runs the King's Lists: a tournament every ${WEEKDAYS[CFG.TOURNEY_WEEKDAY]} from 9:00 to 17:00${daysUntil(CFG.TOURNEY_WEEKDAY) ? ` (in ${daysUntil(CFG.TOURNEY_WEEKDAY)} days)` : ' (today!)'}.</div>`; },
+  mews: (b, btns) => { btns.push({ label: '🦅 Adopt a falcon or hound (coming in a later update)', disabled: true, fn: () => 0 }); return '<div>Hooded falcons and lazy hounds. Wren Ashby keeps them. Pets and companions arrive in a later update.</div>'; },
+  forge: (b, btns) => `<div>The royal stations outside (Royal Anvil, Workbench and Loom) turn relic gear into <b>Royal</b> relic gear: a boss trophy, a Glimmering Essence and a <b>Royal Commission</b>. You hold ${invCount(G.player.inv, 'royal_writ')} Royal Commission(s).</div><div class="small dim">Commissions come from the King's charges, and once a week from the Treasurer (Freedom of the Keep).</div>`,
+  kitchens: (b, btns) => { const R = royal(), P = G.player; btns.push({ label: R.mealDay === gameDay() ? 'Fed today' : '🍲 Ask the Head Cook for a meal', disabled: R.mealDay === gameDay() || R.standing < 10, tt: R.standing < 10 ? 'Needs Royal Standing 10.' : 'Once a day.', fn: () => { R.mealDay = gameDay(); invAdd(P.inv, R.standing >= 60 ? 'kings_pie' : 'bread', R.standing >= 60 ? 1 : 3); log('Brannagh shoves a warm parcel into your hands. "Eat. You look thin."', 'gold'); UI.building(b); } });
+    return '<div>Steam, shouting and the smell of bread. The kitchens feed the whole court.</div>'; },
+  granary: (b, btns) => { const P = G.player; const crops = P.inv.map((s, i) => s && !s.kind && s.id.startsWith('crop_') ? i : -1).filter(i => i >= 0); const val = crops.reduce((a, i) => a + Math.round(ITEMS[P.inv[i].id].value * 1.25) * P.inv[i].qty, 0);
+    btns.push({ label: `🌾 Sell all crops to the Crown (${val}g)`, disabled: !crops.length, fn: () => { for (const i of crops) P.inv[i] = null; P.gold += val; log(`The granary clerk pays ${val}g for your crops.`, 'gold'); sfx('coin'); UI.building(b); } });
+    return '<div>The Crown buys grain and vegetables for the winter stores at a fair price (better than the market).</div>'; },
+  greathall: (b, btns) => { btns.unshift({ label: '🚪 Enter the Great Hall', fn: () => enterInterior('greathall', b) }); return `<div>Supper every evening from 19:00. The great feast is every ${WEEKDAYS[CFG.FEAST_WEEKDAY]} from 18:00${feastNight() ? ' <b class="gold">(tonight! Join the King\'s table)</b>' : ''}.</div>`; },
+  keep: (b, btns) => { const ok = royalPass() >= 2; btns.unshift({ label: ok ? '🚪 Enter the Keep' : '🚪 The guards bar the door', disabled: !ok, fn: () => enterInterior('keep', b) }); return ok ? '<div>The Keep: throne room, solar, treasury and cells.</div>' : `<div>"Only those summoned by the King may enter." ${esc(accessHint())}</div>`; },
+  chapel: (b, btns) => { const R = royal(), P = G.player; btns.push({ label: R.blessDay === gameDay() ? 'Blessed today' : '✨ Receive the royal blessing', disabled: R.blessDay === gameDay(), tt: 'Once a day: +8% armor and +10% holy damage for 10 min.', fn: () => { R.blessDay = gameDay(); addBuff(P, { id: 'royal_bless', dur: 600, defMult: 0.08, addDmg: { holy: 0.1 } }); log('Father Anselm blesses you in the name of the Crown.', 'gold'); UI.building(b); } });
+    return '<div>The royal chapel, quiet and gold-lit. Father Anselm hears the court\'s confessions here.</div>'; },
+  tower: (b, btns) => { btns.unshift({ label: '🚪 Climb into the Mage Tower', fn: () => enterInterior('magetower', b) }); return '<div>Magistra Isolde Wynter, the Court Mage, studies here. Her shelves hold notes on every monster in the vale.</div>'; },
+  library: (b, btns) => { btns.unshift({ label: '📚 Browse the shelves', fn: () => UI.library() }); const R = royal(); return `<div>The Library & Chancery. Books on the realm and its monsters (${R.books.length}/${LORE_BOOKS.length} read). The chancery clerks keep the Roll of Honor: your Royal Standing is <b>${R.standing}/100</b> (${standingTier(R.standing)}).</div>`; },
+  lodgings: (b, btns) => { btns.push({ label: '🛏 Rest until morning (the Crown pays)', fn: () => { G.player.gold += 10; restAtInn(); } }); return '<div>Clean beds for guests of the court.</div>'; },
+};
+function enterInterior(id, b) { const P = G.player, S = INTERIORS[id]; if (royalPass() < (S.need || 0)) return refuseEntry({ name: S.name.toLowerCase(), need: S.need });
+  P.retPos = b ? { x: (b.outX + 0.5) * CFG.TILE, y: (b.outY + 0.5) * CFG.TILE } : { x: P.x, y: P.y }; UI.close(); changeMap(id); }
+// the guards politely refuse
+let _refuseT = 0;
+function refuseEntry(g) { const now = performance.now(); if (now - _refuseT < 3500 && UI.open) return; _refuseT = now;
+  const m = curMap(), P = G.player; const guard = (G.court || []).filter(n => n.guard && (n.map || 'world') === m.id && !n.hidden).sort((a, b) => dist(a.x, a.y, P.x, P.y) - dist(b.x, b.y, P.x, P.y))[0];
+  if (guard) npcSay(guard, 'Halt. Not without leave of the Crown.');
+  const R = royal();
+  UI.choose(guard ? guard.name : 'Royal Guard', `<div class="dlg-line">"${g.need >= 3 ? `Your pardon, ${esc(P.name)}, but ${esc(g.name)} is for those who hold Freedom of the Keep.` : g.need >= 2 ? 'Your pardon. Only those granted an audience may enter the Keep.' : 'Good day. The inner bailey is for the royal household and those the Crown vouches for. Nothing personal.'}"</div>
+    <div class="quest small"><b>Your access:</b> ${ROYAL_PASS_NAMES[R.pass]} · Royal Standing ${R.standing}/100<br>${esc(accessHint())}</div>`, [{ label: 'Show my standing (Journal)', fn: () => UI.jobs() }], () => UI.close());
+}
+// ---- extra dialog bits for courtiers (body + buttons), used by UI.npc ----
+function courtBody(n) {
+  const R = royal(); let h = `<div class="small">Royal Standing <b>${R.standing}/100</b> (${standingTier(R.standing)}) · ${ROYAL_PASS_NAMES[R.pass]}</div>`;
+  const st = chainStep(); if (st && st.giver === n.cid) {
+    h += `<div class="quest"><b>Royal task: ${esc(st.title)}</b><br>${esc(st.desc())}${st.prog ? `<br><span class="small">Progress: ${esc(st.prog(R))}</span>` : ''}<br><span class="small">Reward: ${esc(st.rewardText)}</span></div>`; }
+  if (n.cid === 'steward' && R.pass < 3) h += `<div class="small dim">How to earn your way in: ${esc(accessHint())}</div>`;
+  return h;
+}
+function courtLine(n) { const st = chainStep(); if (st && st.giver === n.cid) return st.line; if (n.cid === 'king') return pick(NPC_LINES.king); return null; }
+function courtButtons(n, btns) {
+  const R = royal(), P = G.player, st = chainStep();
+  if (st && st.giver === n.cid) {
+    if (!R.cqActive) btns.unshift({ label: `👑 Accept: ${esc(st.title)}`, fn: () => { R.cqActive = true; if (st.start) st.start(R); if (st.auto) chainTurnIn(n); UI.npc(n); } });
+    else btns.unshift({ label: st.done(R) ? `👑 Complete: ${esc(st.title)}` : `👑 ${esc(st.title)} (${esc(st.prog ? st.prog(R) : 'in progress')})`, disabled: !st.done(R), fn: () => { chainTurnIn(n); UI.npc(n); } });
+  }
+  if (n.cid === 'treasurer') { const can = R.pass >= 3 && R.writWeek !== gameWeek();
+    btns.push({ label: `📜 Buy a Royal Commission (${CFG.WRIT_PRICE}g, once a week)`, disabled: !can || P.gold < CFG.WRIT_PRICE, tt: R.pass < 3 ? 'Needs Freedom of the Keep.' : R.writWeek === gameWeek() ? 'Already bought this week.' : 'Needed for royal relic gear.', fn: () => { P.gold -= CFG.WRIT_PRICE; R.writWeek = gameWeek(); invAdd(P.inv, 'royal_writ', 1); log('The Treasurer seals a Royal Commission and slides it across the table.', 'gold'); sfx('coin'); UI.npc(n); } }); }
+  if (n.cid === 'marshal') btns.push({ label: tourneyOpen() ? '🏆 Enter the King\'s Lists (25g)' : `🏆 Next tournament: ${WEEKDAYS[CFG.TOURNEY_WEEKDAY]} 9:00-17:00`, disabled: !tourneyOpen() || R.tourneyWeek === gameWeek(), tt: R.tourneyWeek === gameWeek() ? 'You already competed this week.' : 'Three bouts against monsters at your level. Yield safely at low health.', fn: () => startTourney() });
+  if (n.cid === 'courtmage') btns.push({ label: '📚 "Where can I learn about the monsters?"', fn: () => UI.dialog(n.name, '<div class="dlg-line">"The Library holds the court\'s notes on every great beast in the vale. Some of the older reports are restricted, but the King may grant you the right to read them."</div>', [{ label: 'Back', fn: () => UI.npc(n) }]) });
+}
+function listsGate() { const R = royal(); if (!tourneyOpen()) return UI.dialog('The King\'s Lists', `<div class="dlg-line">The tiltyard is empty. The tournament runs every ${WEEKDAYS[CFG.TOURNEY_WEEKDAY]} from 9:00 to 17:00${daysUntil(CFG.TOURNEY_WEEKDAY) ? ` (in ${daysUntil(CFG.TOURNEY_WEEKDAY)} days)` : ''}.</div>`, [{ label: 'Close', fn: () => UI.close() }]);
+  if (R.tourneyWeek === gameWeek()) return UI.dialog('The King\'s Lists', '<div class="dlg-line">You have already competed this week. Come back next Thornsday.</div>', [{ label: 'Close', fn: () => UI.close() }]);
+  UI.choose('The King\'s Lists', 'Three bouts against monsters at your level, in front of the court. Entry 25g. Win for gold, a Tourney Ribbon and Royal Standing. If you fall too low, the Marshal calls the bout: <b>no death penalty</b>.', [{ label: 'Enter the Lists (25g)', fn: () => startTourney() }], () => UI.close()); }
+function deskClick(o) { const n = (G.court || []).find(x => x.cid === o.who && x.map === 'world' && !x.hidden && dist(x.x, x.y, (o.x + 0.5) * CFG.TILE, (o.y + 0.5) * CFG.TILE) < 3 * CFG.TILE);
+  if (n) return UI.npc(n); log(o.who === 'steward' ? 'The Steward is away. She keeps her desk from 7:00 to 18:00 (lunch at noon).' : 'The tax table is empty. The Treasurer collects here from 11:00 to 15:00.', 'dim'); }
+// ---- daily announcements ----
+function courtAnnouncements() { const d = gameDay(), h = hour(); if (G.annDay === d || h < 7) return; G.annDay = d;
+  if (weekday() === CFG.TOURNEY_WEEKDAY) chat('system', 'Herald: "Hear ye! The King\'s Lists open at the castle tiltyard from 9 until 17. Champions wanted!"', 'gold');
+  if (weekday() === CFG.FEAST_WEEKDAY) chat('system', 'Herald: "Tonight the King holds a great feast in the Great Hall, from 18 until 23!"', 'gold'); }
+// court lines
+Object.assign(NPC_LINES, {
+  king: ['The realm comes before any one of us. Myself included.', 'I reward service. I do not reward talk.', 'Taxes keep the walls up. Walls keep you alive. Think on that before you grumble.', 'A king who is loved is lucky. A king who is obeyed is safe. I prefer to be both, but I will settle for the second.', 'Justice is not kindness. Sometimes it is the opposite.'],
+  queen: ['The roses here were my mother\'s. They are stubborn, like the King.', 'Be patient with my husband. He carries the whole vale on his back.', 'The chapel bells sound sweeter in the morning, don\'t you think?', 'If you help the household, the household remembers.'],
+  steward: ['Every coin, every candle, every sack of oats. I count them all.', 'The King sees you when the Steward says he should.', 'Favors for the household are noticed. Shirking is noticed more.', 'Do not track mud on my courtyard.'],
+  constable: ['Captain Hale keeps the town. I keep Hale.', 'Raiders hit the sally ports more each month. Something is stirring them.', 'A guard who sleeps on duty sleeps in the cells.', 'Keep your blade clean and your word cleaner.'],
+  treasurer: ['Royal Commissions do not grow on trees. Well. They grow on very expensive trees.', 'The marsh used to pay taxes. Now it pays in trouble.', 'A tithe of coin or labor. The Crown is not fussy which.'],
+  courtmage: ['Fire stops the treant\'s mending. Frost cracks the granite giant. I wrote it all down in the Library.', 'Magic is just patience with a flair for drama.', 'The Arcanist at the spire and I disagree on everything. It\'s lovely.'],
+  chaplain: ['The light favors those who serve. And those who wash, occasionally.', 'The royal blessing is free. My patience is not.', 'Pray for the King. He will not pray for himself.'],
+  headcook: ['Out of my kitchen unless you\'re carrying flour!', 'The King likes his pie with too much pepper. Don\'t tell him I said so.', 'Feast night is Sunday. I haven\'t slept since Starday.'],
+  marshal: ['Thornsday is tourney day. Bring a strong arm and a short memory.', 'A horse knows a coward. So does a crowd.', 'Mounts? Not for commoners. Not yet, anyway.'],
+  falconer: ['Shh. You\'ll spook the hawks.', 'A falcon chooses you. Never the other way round.', 'The hounds like you. That\'s rare.'],
+  porter: ['Gate opens at dawn, closes never. I sleep with one eye open.', 'Welcome to Hearthvale Keep. Mind the portcullis.', 'Raiders came at the east port last night. The guard saw them off.'],
+  royalguard: ['Move along, citizen.', 'For the King.', 'Quiet night. So far.', 'Eyes open, blade ready.'],
+  royalfight: ['Hold the gate!', 'For the Crown!', 'Shields up!'],
+  feast: ['More wine for the high table!', 'A toast to the King!', 'Try the boar. It\'s Old Tusk\'s cousin.', 'Best night of the week.'],
+  tourney: ['Who will face the beasts today?', 'The crowd wants a champion!', 'Twenty-five gold to enter. Glory is free.'],
+});
+Object.assign(NPC_LIKES, {
+  king: ['royal_mead', 'tourney_ribbon', 'hunters_roast'], queen: ['herb_sunpetal', 'herb_nightbloom', 'pumpkin_pie'], steward: ['bread', 'trout_stew', 'royal_mead'],
+  constable: ['potion_hp2', 'hunters_roast', 'tourney_ribbon'], treasurer: ['essence_rare', 'sap_amber', 'bar_silver'], courtmage: ['essence_rare', 'shard_witchglass', 'herb_frostcap'],
+  chaplain: ['holy_water', 'bread', 'herb_meadowleaf'], headcook: ['crop_pumpkin', 'fish_trout', 'crop_moonmelon'], marshal: ['tourney_ribbon', 'crop_carrot', 'hide_boar'],
+  falconer: ['meat_raw', 'feather_harpy', 'pelt_wolf'], porter: ['royal_mead', 'bread', 'grilled_fish'], royalguard: ['royal_mead', 'hunters_roast', 'bread'],
+});
 
 // ===== 08_jobs.js =====
 // ---------- jobs: gathering, crafting, farming, tasks, services ----------
@@ -2097,7 +2689,7 @@ function finishGather(c) {
 function updateNodes(m, dt) { for (const o of m.objects) if (o.type === 'node' && o.charges <= 0) { o.respawn -= dt; if (o.respawn <= 0) o.charges = o.maxCharges; } }
 
 // ---- crafting ----
-function recipeOutName(r) { return r.out.item ? ITEMS[r.out.item].name + (r.out.qty > 1 ? ' x' + r.out.qty : '') : (r.out.relic ? '★ ' + RELIC_BY_ID[r.out.relic].prefix : materialName(r.out.equip, r.out.tier)) + ' ' + EQUIP_BASES[r.out.equip].name; }
+function recipeOutName(r) { return r.out.item ? ITEMS[r.out.item].name + (r.out.qty > 1 ? ' x' + r.out.qty : '') : (r.out.relic ? (r.out.royal ? '♛ Royal ' : '★ ') + RELIC_BY_ID[r.out.relic].prefix : materialName(r.out.equip, r.out.tier)) + ' ' + EQUIP_BASES[r.out.equip].name; }
 function canCraft(r) { const P = G.player; return r.inputs.every(([id, q]) => invCount(P.inv, id) >= q); }
 function startCraft(r, count) {
   const P = G.player; if (!hasJob(r.job)) return needJobMsg(r.job);
@@ -2155,7 +2747,7 @@ function shopGear(shopId) { // refreshed daily
   const day = Math.floor(G.time / CFG.DAY_LENGTH_SEC); G.shopStock = G.shopStock || {};
   const k = shopId + ':' + day; if (G.shopStock[k]) return G.shopStock[k];
   const lvl = Math.max(2, G.player.level - 1);
-  const list = (SHOPS[shopId].gear || []).map(([b]) => { const it = genEquip(b, lvl, { rarity: chance(0.25) ? 1 : 0 }); it.price = it.value * 3; return it; });
+  const fine = SHOPS[shopId].fine; const list = (SHOPS[shopId].gear || []).map(([b]) => { const it = genEquip(b, fine ? lvl + 1 : lvl, { rarity: fine ? (chance(0.3) ? 2 : 1) : chance(0.25) ? 1 : 0 }); it.price = it.value * 3; return it; });
   for (const kk of Object.keys(G.shopStock)) if (kk.startsWith(shopId + ':')) delete G.shopStock[kk];
   G.shopStock[k] = list; return list;
 }
@@ -2281,9 +2873,9 @@ const UI = {
       return `<div class="job"><span class="ji">${J.icon}</span><b>${J.name}</b> rank ${j.rank} <span class="gold">${rankTitle(j.rank)}</span><div class="bar job"><i style="width:${j.rank >= CFG.JOB_RANK_MAX ? 100 : j.xp / jobXpToNext(j.rank) * 100}%"></i><span>${fmt(j.xp)} / ${fmt(jobXpToNext(j.rank))}</span></div><span class="small dim">${J.perk}</span></div>`; }).join('');
     const tasks = (G.tasks || []).filter(t => t.accepted).map(t => `<div class="small">• ${esc(t.title)} ${t.kind === 'kill' ? `(${t.have}/${t.need})` : `(${invCount(P.inv, t.item)}/${t.need})`}</div>`).join('') || '<div class="dim small">None. Visit the Job Board in the town square.</div>';
     const leads = P.leads.map(l => `<div class="small">• ${esc(l)}</div>`).join('') || '<div class="dim small">Talk to the Elder in the town square for rumors.</div>';
-    const favors = activeQuests().map(q => { const n = G.npcs.find(x => x.id === q.from); return `<div class="small">• ${esc(q.title)} for ${esc(n ? n.name : '?')} (${Math.min(questProgress(q), q.need)}/${q.need})${questDone(q) ? ' <span class="gold">ready</span>' : ''}</div>`; }).join('') || '<div class="dim small">None. Townsfolk with a ! over their head have a favor to ask.</div>';
+    const favors = activeQuests().map(q => { const n = allNpcs().find(x => x.id === q.from); return `<div class="small">• ${esc(q.title)} for ${esc(n ? n.name : '?')} (${Math.min(questProgress(q), q.need)}/${q.need})${questDone(q) ? ' <span class="gold">ready</span>' : ''}</div>`; }).join('') || '<div class="dim small">None. Townsfolk with a ! over their head have a favor to ask.</div>';
     const bosses = Object.entries(BOSSES).map(([id, B]) => { const known = P.bosses && P.bosses[id] || P.discovered[B.poi]; return `<div class="small">• ${known ? esc(MONSTERS[B.mon].name) : '???'} <span class="dim">(${esc(B.zone)})</span> — ${bossStatusText(id)}</div>`; }).join('');
-    this.show('jobs', 'Jobs & Journal', `<div class="cols"><div>${rows}</div><div><h3>Active tasks</h3>${tasks}<h3>Favors for townsfolk</h3>${favors}<h3>Bosses</h3>${bosses}<h3>Leads</h3>${leads}<h3>Places discovered</h3><div class="small">${Object.keys(P.discovered).map(k => esc((G.maps.world.pois[k] || {}).name || k)).join(', ') || 'None yet'}</div></div></div>`, true);
+    this.show('jobs', 'Jobs & Journal', `<div class="cols"><div>${rows}</div><div><h3>Active tasks</h3>${tasks}${royalJournal()}<h3>Favors for townsfolk</h3>${favors}<h3>Bosses</h3>${bosses}<h3>Leads</h3>${leads}<h3>Places discovered</h3><div class="small">${Object.keys(P.discovered).map(k => esc((G.maps.world.pois[k] || {}).name || k)).join(', ') || 'None yet'}</div></div></div>`, true);
   },
   // ----- world map -----
   map() {
@@ -2324,6 +2916,7 @@ const UI = {
       if (k === 'class') { if (P.cls === v) body += `<div>You walk the path of the <b>${CLASSES[v].name}</b>.</div>`;
         else { body += `<div>"${CLASSES[v].desc}${P.classes[v] ? ' Welcome back.' : ' Shall I train you?'}"</div>${P.cls !== 'adventurer' && !P.classes[v] ? '<div class="small dim">Your current class rank is kept. You can switch back any time in town.</div>' : ''}`; btns.push({ label: P.classes[v] ? `Switch to ${CLASSES[v].name}` : `Become a ${CLASSES[v].name}`, fn: () => { learnClass(v); UI.building(b); } }); } }
     }
+    for (const s of b.services) { const [k, v] = s.split(':'); if (k === 'royal' && ROYAL_SERVICES[v]) body += ROYAL_SERVICES[v](b, btns); }
     if (b.id === 'chapel') body += `<div class="small">Sister Amaris: "The dead below the old crypt shrug off steel. Fire burns them, and holy light breaks them. Take holy water if you go."</div>`;
     btns.push({ label: 'Leave', fn: () => UI.close() });
     this.dialog(b.name, body, btns);
@@ -2333,7 +2926,7 @@ const UI = {
     if (P.affinity[n.id] === undefined) P.affinity[n.id] = 0; const info = npcInfo(n.id), day = gameDay();
     if (info.talkDay !== day) { info.talkDay = day; addAffinity(n, 1); }
     const aff = P.affinity[n.id], q = npcQuest(n);
-    let line = n.job === 'elder' ? (P.leads.length < RUMORS.length ? 'Ah, a new face. Every trade in this valley has a teacher somewhere. Ask, and I\'ll tell you what I\'ve heard.' : 'You know all I know. Go and see the world.') : pick(NPC_LINES[n.job] || NPC_LINES.any);
+    let line = n.court && courtLine(n) ? courtLine(n) : n.job === 'elder' ? (P.leads.length < RUMORS.length ? 'Ah, a new face. Every trade in this valley has a teacher somewhere. Ask, and I\'ll tell you what I\'ve heard.' : 'You know all I know. Go and see the world.') : pick(NPC_LINES[n.job] || NPC_LINES.any);
     const btns = []; let qhtml = '';
     if (q && q.state === 'offered') { qhtml = `<div class="quest"><b>Favor:</b> "${esc(q.line)} Could you ${esc(q.title.toLowerCase())}${q.where ? ' (' + esc(q.where) + ')' : ''}?"<br><span class="small">Reward: <span class="gold">${q.gold}g</span> + ${q.xp} XP + friendship${q.bonus ? ' + ' + esc(ITEMS[q.bonus].name) : ''}</span></div>`;
       btns.push({ label: `✔ Accept favor: ${esc(q.title)}`, disabled: activeQuests().length >= CFG.NPC_QUEST_MAX, fn: () => { acceptQuest(n); UI.npc(n); } }); }
@@ -2341,15 +2934,16 @@ const UI = {
       qhtml = `<div class="quest"><b>Favor:</b> ${esc(q.title)} — ${Math.min(pr, q.need)}/${q.need} ${done ? '<span class="gold">ready!</span>' : ''}</div>`;
       btns.push({ label: done ? `🎁 Hand in: ${esc(q.title)}` : `Hand in (${Math.min(pr, q.need)}/${q.need})`, disabled: !done, fn: () => { handInQuest(n); UI.npc(n); } });
       btns.push({ label: 'Give up the favor', fn: () => UI.choose('Give up?', `${esc(n.name)} will be a little disappointed (-2 friendship).`, [{ label: 'Give up', danger: true, fn: () => { abandonQuest(n); UI.npc(n); } }], () => UI.npc(n)) }); }
-    else qhtml = `<div class="small dim">${esc(n.name)} has nothing else to ask of you today.</div>`;
+    else qhtml = n.noFavors ? '' : `<div class="small dim">${esc(n.name)} has nothing else to ask of you today.</div>`;
     if (n.job === 'elder') { const next = RUMORS.find(r => !P.leads.includes(r)); btns.push({ label: next ? 'Ask for rumors' : 'No more rumors', disabled: !next, fn: () => { P.leads.push(next); log('New lead: ' + next, 'job'); UI.npc(n); } }); }
+    if (n.court) courtButtons(n, btns);
     btns.push({ label: info.giftDay === day ? 'Gift given today' : '🎀 Give a gift', disabled: info.giftDay === day, fn: () => this.giftPicker(n) });
     const elig = Party.eligible(n);
-    btns.push({ label: 'Invite to party (coming later)', disabled: !Party.canRecruit(n), tt: elig ? `${n.name} would follow you. Parties arrive in a future update.` : `Needs ${CFG.RECRUIT_AFFINITY} friendship and ${CFG.RECRUIT_FAVORS} favors. Parties arrive in a future update.`, fn: () => Party.recruit(n) });
+    if (!n.court) btns.push({ label: 'Invite to party (coming later)', disabled: !Party.canRecruit(n), tt: elig ? `${n.name} would follow you. Parties arrive in a future update.` : `Needs ${CFG.RECRUIT_AFFINITY} friendship and ${CFG.RECRUIT_FAVORS} favors. Parties arrive in a future update.`, fn: () => Party.recruit(n) });
     btns.push({ label: 'Goodbye', fn: () => UI.close() });
     const hearts = Math.floor(aff / 10);
-    this.dialog(n.name, `<div><b>${esc(n.name)}</b> · ${RACES[n.race].name} ${n.job === 'laborer' ? 'Laborer' : (JOBS[n.job] ? JOBS[n.job].name : n.job[0].toUpperCase() + n.job.slice(1))} · Level ${n.level}</div>
-      <div class="dim small">Mood: ${n.mood} · ${npcActivityText(n)}</div>
+    this.dialog(n.name, `<div><b>${esc(n.name)}</b> · ${RACES[n.race].name} ${n.court ? esc(n.title) : n.job === 'laborer' ? 'Laborer' : (JOBS[n.job] ? JOBS[n.job].name : n.job[0].toUpperCase() + n.job.slice(1))} · Level ${n.level}</div>
+      <div class="dim small">Mood: ${n.mood} · ${n.court ? courtActivityText(n) : npcActivityText(n)}</div>${n.court ? courtBody(n) : ''}
       <div class="small" data-tt="Friendship rises when you talk (once a day), do favors and give gifts. Likes: ${esc((NPC_LIKES[n.job] || []).map(id => ITEMS[id] ? ITEMS[id].name : id).join(', '))}">Friendship: <span class="heart">${'♥'.repeat(hearts)}</span><span class="dim">${'♡'.repeat(10 - hearts)}</span> ${aff}/100 · <b>${affTier(aff)}</b> · Favors done: ${info.favors}${elig ? ' · <span class="gold">Would join your party (coming later)</span>' : ''}</div>
       <div class="dlg-line">"${esc(line)}"</div>${qhtml}`, btns);
   },
@@ -2459,9 +3053,9 @@ const UI = {
     const jl = P.lastJob ? `${JOBS[P.lastJob].icon} ${JOBS[P.lastJob].name} r${P.jobs[P.lastJob].rank}` : '<span class="dim">No job yet</span>';
     $('#pinfo').innerHTML = `<b>${esc(P.name)}</b> · Lv ${P.level} <span style="color:${CLASSES[P.cls].color}">${CLASSES[P.cls].name}</span> r${c.rank}<br><span class="gold">● ${fmt(P.gold)}g</span>${P.bank.gold ? ` <span class="dim small">(+${fmt(P.bank.gold)} banked)</span>` : ''} · ${jl}${P.statPts ? ' · <span class="gold">+' + P.statPts + ' pts (C)</span>' : ''}`;
     const m = curMap(); const z = m.id === 'world' ? m.zoneAt(P.x / CFG.TILE, P.y / CFG.TILE) : null;
-    const lv = m.id === 'world' ? Math.round(zoneLevelAt(m, P.x / CFG.TILE, P.y / CFG.TILE)) : m.fixedLevel;
+    const inK = m.id === 'world' && inCastle(m, P.x, P.y); const lv = m.id === 'world' ? Math.round(zoneLevelAt(m, P.x / CFG.TILE, P.y / CFG.TILE)) : m.fixedLevel;
     const h = hour(); const hh = Math.floor(h), mm = Math.floor((h - hh) * 60);
-    $('#zone').innerHTML = `${esc(z ? z.name : m.name)} <span class="dim">${z && z.id === 'town' ? 'safe' : 'Lv ~' + lv}</span><br>Day ${Math.floor(G.time / CFG.DAY_LENGTH_SEC) + 1} · ${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')} ${isNight() ? '🌙' : '☀'}`;
+    $('#zone').innerHTML = `${esc(inK ? 'Hearthvale Keep' : z ? z.name : m.name)} <span class="dim">${(z && z.id === 'town') || (m.interior && !INTERIORS[m.id].arena) ? 'safe' : m.interior ? 'tournament' : 'Lv ~' + lv}</span><br>${WEEKDAYS[weekday()]}, day ${Math.floor(G.time / CFG.DAY_LENGTH_SEC) + 1} · ${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')} ${isNight() ? '🌙' : '☀'}`;
     for (let i = 0; i < 4; i++) { const el = $('#sk' + i); const s = skillInSlot(P, i); const S = s ? SKILLS[s.id] : null;
       el.querySelector('.sn').textContent = S ? S.name : ''; el.classList.toggle('locked', !S || s.locked); el.classList.toggle('ult', i === 3);
       el.querySelector('.si').textContent = S ? SKILL_ICONS[s.id] || '✦' : ''; el._tt = () => S ? `<div class="tt-name">${'QWER'[i]}: ${S.name}${S.ult ? ' <span class="gold">(Ultimate)</span>' : ''}</div><div class="tt-sub">${S.mana} mana · ${S.cd}s cooldown</div><div class="tt-desc">${S.desc}</div>${s.locked ? `<div class="tt-bad">Unlocks at ${CLASSES[P.cls].name} rank ${s.need}</div>` : ''}` : `<div class="tt-name">${'QWER'[i]}: empty</div><div class="tt-desc">Learn a class from a trainer to fill this slot.</div>`; }
@@ -2469,7 +3063,7 @@ const UI = {
     $('#buffs').innerHTML = P.buffs.map(b => `<span class="buff" title="${b.id}">${BUFF_NAMES[b.id] || b.id} ${Math.ceil(b.t)}s</span>`).join('') + (P.poison ? '<span class="buff bad">Poisoned</span>' : '') + (P.stealth ? '<span class="buff">Hidden</span>' : '');
   },
 };
-const BUFF_NAMES = { war_cry: '📯 War Cry', tumble: '🌀 Tumble', divine: '✨ Divine', poison_blades: '🧪 Poison Blades', mend: '💚 Mending', oil_fire: '🔥 Fire Oil', oil_frost: '❄ Frost Oil', blessed: '✝ Blessed', might: '💪 Might', mind: '🧠 Mind', fed: '🍖 Well Fed' };
+const BUFF_NAMES = { war_cry: '📯 War Cry', tumble: '🌀 Tumble', divine: '✨ Divine', poison_blades: '🧪 Poison Blades', mend: '💚 Mending', oil_fire: '🔥 Fire Oil', oil_frost: '❄ Frost Oil', blessed: '✝ Blessed', might: '💪 Might', mind: '🧠 Mind', fed: '🍖 Well Fed', feast: '👑 Feast-Fortified', royal_bless: '✨ Royal Blessing', arcane: '🔮 Arcane Insight' };
 const SKILL_ICONS = { power_strike: '⚔', cleave: '🪓', war_cry: '📯', charge: '🐂', earthshatter: '💥', pierce_arrow: '➹', volley: '🏹', tumble: '🌀', arrow_rain: '☔', firebolt: '🔥', frost_nova: '❄', blink: '✧', meteor: '☄', smite: '✝', mend: '💚', sanctuary: '⛪', divine_wrath: '☀', shiv: '🗡', poison_blades: '🧪', shadowstep: '👤', death_mark: '☠' };
 function itemIcon(id) { const d = ITEMS[id]; return { bar: '▬', herb: '❦', fish: '><>', mat: '◆', seed: '∴', potion: d.use && d.use.buff && d.use.heal ? '🍞' : '⚱' }[d.icon] || '●'; }
 function equipIcon(b) { return { sword: '🗡', axe: '🪓', mace: '🔨', dagger: '🔪', bow: '🏹', staff: '🪄', wand: '✨', shield: '🛡', tome: '📕', ring: '💍', amulet: '📿' }[b] || { head: '⛑', chest: '👕', legs: '👖', hands: '🧤', feet: '👢' }[EQUIP_BASES[b].slot]; }
@@ -2512,7 +3106,7 @@ const HELP_HTML = `<table class="help">
 <tr><td>Esc</td><td>Menu: save, load, export/import, controls</td></tr>
 <tr><td>L or Enter</td><td>Open/close the chat log (filters: loot, XP, combat, chatter)</td></tr>
 <tr><td>1-9 in a pop-up</td><td>Pick that button</td></tr></table>
-<p class="small">Start: talk to the <b>Elder</b> in the town square for rumors, then explore. Class trainers and job teachers are spread around the world. Death costs 20% of your carried gold and 10% gear durability — bank your gold and repair at the Smithy.</p><p class="small"><b>Bosses</b> (☠ on the map) each have a trick. Read signs, notes and townsfolk gossip, and hover a monster you have beaten to see what it resists. A beaten boss stays down for 3 in-game days, then returns stronger. Its trophy lets crafters make relic gear, the best gear for that level. <b>Favors:</b> townsfolk with a <b>!</b> over their head want help. Favors, gifts and daily chats raise friendship.</p>`;
+<p class="small"><b>Hearthvale Keep</b> (north of town): the outer bailey is open to all. Do favors for courtiers (look for ! marks) and see the Steward at her desk to earn an Inner Bailey Pass, then an audience with the King, then Freedom of the Keep. Your progress is under <b>Royal Standing</b> in the Journal (J). Tournament every Thornsday, feast every Sunday.</p><p class="small">Start: talk to the <b>Elder</b> in the town square for rumors, then explore. Class trainers and job teachers are spread around the world. Death costs 20% of your carried gold and 10% gear durability — bank your gold and repair at the Smithy.</p><p class="small"><b>Bosses</b> (☠ on the map) each have a trick. Read signs, notes and townsfolk gossip, and hover a monster you have beaten to see what it resists. A beaten boss stays down for 3 in-game days, then returns stronger. Its trophy lets crafters make relic gear, the best gear for that level. <b>Favors:</b> townsfolk with a <b>!</b> over their head want help. Favors, gifts and daily chats raise friendship.</p>`;
 
 function craftPreview(r) { const lo = craftEquipOut(r, 0), hi = craftEquipOut(r, 3); const qn = QUALITIES[lo.quality].name;
   const rel = r.out.relic ? `<div class="gold">Relic gear (${esc(MONSTERS[BOSSES[RELIC_BY_ID[r.out.relic].boss].mon].name)} trophy): always Fine or better, +12% power and a signature bonus</div>` : '';
@@ -2534,6 +3128,22 @@ function statTooltip(P, k) {
   return t + src + (P.statPts ? `<div class="gold small">You have ${P.statPts} unspent points. Click + to spend.</div>` : '');
 }
 
+// ---------- v1.3: royal journal section and the library ----------
+function royalJournal() {
+  const P = G.player, R = royal(), st = chainStep();
+  const steps = ROYAL_CHAIN.map((c, i) => `<div class="small">${i < R.chain ? '✔' : i === R.chain ? '➤' : '·'} ${i <= R.chain ? esc(c.title) : '???'}${i === R.chain ? ` <span class="dim">(${R.cqActive || c.auto ? '' : 'not started, '}see ${esc(courtName(c.giver))})</span>` : ''}</div>`).join('');
+  return `<h3>👑 Royal Standing</h3><div class="small" data-tt="Royal Standing (0-100) rises with court favors (+6), defending the gates from night raiders (+1 each, up to +5 a night), winning the Thornsday tournament (+5), feasts (+2) and the King's charges.">Standing <b class="gold">${R.standing}/100</b> · ${standingTier(R.standing)}${R.title ? ' · <b class="gold">' + esc(R.title) + '</b>' : ''}<div class="bar job"><i style="width:${R.standing}%"></i><span>${R.standing} / 100</span></div></div>
+    <div class="small">Access: <b>${ROYAL_PASS_NAMES[R.pass]}</b></div><div class="small dim">Next: ${esc(accessHint())}</div>
+    ${st && (R.cqActive || st.auto) ? `<div class="small">Royal task: <b>${esc(st.title)}</b> · ${esc(st.desc())}${st.prog ? ' · ' + esc(st.prog(R)) : ''}${st.done(R) ? ' <span class="gold">ready!</span>' : ''}</div>` : ''}
+    ${steps}<div class="small dim">Court favors done: ${R.courtFavors} · Raiders slain: ${R.raidKills} · Lore books read: ${R.books.length}/${LORE_BOOKS.length}</div>
+    <div class="small dim">Next tournament: ${WEEKDAYS[CFG.TOURNEY_WEEKDAY]}${daysUntil(CFG.TOURNEY_WEEKDAY) ? ` (in ${daysUntil(CFG.TOURNEY_WEEKDAY)} days)` : ' (today, 9-17)'} · Next feast: ${WEEKDAYS[CFG.FEAST_WEEKDAY]}${daysUntil(CFG.FEAST_WEEKDAY) ? ` (in ${daysUntil(CFG.FEAST_WEEKDAY)} days)` : ' (tonight, 18-23)'}</div>`;
+}
+UI.library = function () {
+  const R = royal(), pass = royalPass();
+  const opts = LORE_BOOKS.map(b => ({ label: `${R.books.includes(b.id) ? '✔ ' : '📖 '}${esc(b.title)}`, sub: pass < b.need ? 'Restricted: needs Freedom of the Keep' : R.books.includes(b.id) ? 'read' : 'unread', disabled: pass < b.need, fn: () => readBook(b) }));
+  UI.choose('Library & Chancery', `The court's books on the realm and its monsters. You have read ${R.books.length} of ${LORE_BOOKS.length}. Reading a book for the first time gives XP.`, opts, () => UI.close());
+};
+
 // ===== 10_save.js =====
 // ---------- save / load (localStorage, 3 slots, export/import) ----------
 const SAVE_KEY = s => 'hearthvale_slot_' + s;
@@ -2542,7 +3152,8 @@ function unpackFog(str, f) { const s = atob(str); for (let i = 0; i < s.length; 
 function serialize() {
   const P = G.player; const w = G.maps.world;
   const p = JSON.parse(JSON.stringify(P, (k, v) => (k === 'path' || k === 'channel' || k === 'attackTarget' || k === 'interact' || k === 'dash' || k === 'st' || k === 'wpn') ? undefined : v));
-  if (P.map !== 'world') { const c = w.pois[P.map] || w.pois.crypt; p.map = 'world'; p.x = (c.x + 0.5) * CFG.TILE; p.y = (c.y + 2.5) * CFG.TILE; }
+  if (P.map !== 'world' && INTERIORS[P.map]) { const r = P.retPos || w.spawn; p.map = 'world'; p.x = r.x * (P.retPos ? 1 : CFG.TILE); p.y = r.y * (P.retPos ? 1 : CFG.TILE); }
+  else if (P.map !== 'world') { const c = w.pois[P.map] || w.pois.crypt; p.map = 'world'; p.x = (c.x + 0.5) * CFG.TILE; p.y = (c.y + 2.5) * CFG.TILE; }
   return { v: CFG.VERSION, savedAt: Date.now(), player: p, time: G.time, fog: packFog(w.fog),
     plots: w.plots.filter(pl => !pl.npc).map(pl => ({ idx: pl.idx, crop: pl.crop, age: pl.crop ? G.time - pl.plantedAt : 0, growDur: pl.growDur })),
     tasks: G.tasks, taskDay: G.taskDay, buyback: G.buyback || [] };
@@ -2564,6 +3175,7 @@ function migrateSave(d) {
     if (p.map && p.map !== 'world') p.map = 'world';
     d.migratedFrom = v;
   }
+  if (older(v, '1.3.0')) { d.migratedFrom13 = v; }
   d.v = CFG.VERSION; return d;
 }
 function applySave(d, slot) {
@@ -2572,11 +3184,13 @@ function applySave(d, slot) {
   const P = Object.assign(newPlayer(d.player.name, d.player.race, d.player.color), d.player);
   P.bank.items = (P.bank.items || []).concat(new Array(Math.max(0, CFG.BANK_SLOTS - (P.bank.items || []).length)).fill(null));
   while (P.inv.length < CFG.INV_SLOTS) P.inv.push(null);
-  G.player = P; P.map = 'world'; recalc(P);
+  G.player = P; P.map = 'world'; recalc(P); royal();
+  { const w = G.maps.world; if (inCastle(w, P.x, P.y, 3) || w.solidPx(P.x, P.y)) { P.x = w.spawn.x * CFG.TILE; P.y = w.spawn.y * CFG.TILE; d.movedOut = true; } }
   G.time = d.time || 0; unpackFog(d.fog, G.maps.world.fog); rebuildMapImage(G.maps.world);
   for (const s of d.plots || []) { const pl = G.maps.world.plots[s.idx]; if (pl && s.crop) { pl.crop = s.crop; pl.plantedAt = G.time - s.age; pl.growDur = s.growDur; } }
   G.tasks = d.tasks || []; G.taskDay = d.taskDay; G.buyback = d.buyback || []; G.slot = slot;
   beginPlay(); log(`Welcome back, ${P.name}.`, 'gold'); if (d.migratedFrom) log(`Save updated from v${d.migratedFrom} to v${CFG.VERSION}. New: the Blightmarsh, Emberdeep Mine, world bosses, rare monsters, and townsfolk favors.`, 'gold');
+  if (d.migratedFrom13) log(`New in v${CFG.VERSION}: Hearthvale Keep, the royal castle just north of town. Walk up the north street to the gatehouse. The Steward explains how to earn your way in.${d.movedOut ? ' (You were standing where the castle now stands, so you woke up in the town square.)' : ''}`, 'gold');
 }
 function loadGame(slot) { const s = localStorage.getItem(SAVE_KEY(slot)); if (!s) return; try { applySave(JSON.parse(s), slot); UI.close(); } catch (e) { alert('Could not load save: ' + e.message); console.error(e); } }
 function exportSaveText() { return 'HV1:' + btoa(unescape(encodeURIComponent(JSON.stringify(serialize())))); }
@@ -2594,13 +3208,14 @@ function curMap() { return G.maps[G.player.map]; }
 function startWorld() {
   RNG = mulberry32((Date.now() ^ 0x5bd1e995) >>> 0);
   G.maps = { world: genOverworld() }; const w = G.maps.world;
-  G.npcs = genTownsfolk(w); G.trainers = genTrainers(w); G.texts = []; G.time = CFG.START_HOUR / 24 * CFG.DAY_LENGTH_SEC; G.tasks = []; G.taskDay = -1;
+  G.npcs = genTownsfolk(w); G.trainers = genTrainers(w); G.court = genCourt(w); G.tourney = null; G.annDay = -1; G.texts = []; G.time = CFG.START_HOUR / 24 * CFG.DAY_LENGTH_SEC; G.tasks = []; G.taskDay = -1;
   rebuildMapImage(w);
 }
 function beginPlay() {
   G.started = true; G.paused = false; G.dead = false; $('#title').style.display = 'none'; $('#hud').style.display = 'block'; refreshTasks(); UI.dirty = true;
   // simulate the town for a bit so townsfolk are already going about their day
   for (let k = 0; k < 40; k++) for (const n of G.npcs) updateNpc(n, G.maps.world, 0.5);
+  for (const n of G.court) if (!n.guard) courtSnap(n);
   Chat.lines = []; Chat.load(); chat('system', 'Welcome to Hearthvale. Press L or Enter to open/close this chat log.', 'dim'); Chat.render();
 }
 function newGame(name, race, color, slot) {
@@ -2614,8 +3229,12 @@ function newGame(name, race, color, slot) {
 function changeMap(to) {
   const P = G.player; const from = P.map;
   const D = DUNGEONS[to];
+  const I = INTERIORS[to];
   if (D) { const dm = D.gen((Date.now() & 0xffffff) + 7); G.maps[to] = dm; P.map = to; D.populate(dm); rebuildMapImage(dm); P.x = dm.spawn.x * CFG.TILE; P.y = dm.spawn.y * CFG.TILE; log(D.enter, 'boss'); }
-  else { P.map = 'world'; if (DUNGEONS[from]) { const c = G.maps.world.pois[from]; P.x = (c.x + 0.5) * CFG.TILE; P.y = (c.y + 2.5) * CFG.TILE; delete G.maps[from]; } }
+  else if (I) { // v1.3 interiors (the same system can give any building an inside later)
+    if (INTERIORS[from]) { delete G.maps[from]; } const im = genInterior(to); G.maps[to] = im; P.map = to; rebuildMapImage(im); P.x = im.spawn.x * CFG.TILE; P.y = im.spawn.y * CFG.TILE; log(I.enter, 'dim'); }
+  else { P.map = 'world'; if (DUNGEONS[from]) { const c = G.maps.world.pois[from]; P.x = (c.x + 0.5) * CFG.TILE; P.y = (c.y + 2.5) * CFG.TILE; delete G.maps[from]; }
+    else if (INTERIORS[from]) { const r = P.retPos; if (r) { P.x = r.x; P.y = r.y; } delete G.maps[from]; if (from === 'lists') G.tourney = null; } }
   P.path = null; P.attackTarget = null; P.interact = null; P.channel = null; G.texts = [];
   if (G.started) saveGame(G.slot);
 }
@@ -2628,10 +3247,10 @@ function entityUnderMouse() {
   if (best) return best;
   for (const dr of m.drops) { const d = dist(dr.x, dr.y, wx, wy); if (d < 16 && d < bd) { bd = d; best = { kind: 'drop', ref: dr }; } }
   if (best) return best;
-  if (m.id === 'world') for (const n of G.npcs.concat(G.trainers)) { if (n.hidden) continue; const d = dist(n.x, n.y - 6, wx, wy); if (d < 18 && d < bd) { bd = d; best = { kind: 'npc', ref: n }; } }
+  for (const n of (m.id === 'world' ? G.npcs.concat(G.trainers) : []).concat((G.court || []).filter(c => c.map === m.id))) { if (n.hidden) continue; const d = dist(n.x, n.y - 6, wx, wy); if (d < 18 && d < bd) { bd = d; best = { kind: 'npc', ref: n }; } }
   if (best) return best;
   const tx = Math.floor(wx / CFG.TILE), ty = Math.floor(wy / CFG.TILE); const o = m.objAt(tx, ty);
-  if (o && o.type !== 'lamp') return { kind: 'obj', ref: o };
+  if (o && o.type !== 'lamp' && !o.decor && !(o.type === 'decor' && !INTERIOR_ACTIONS[o.kind])) return { kind: 'obj', ref: o };
   return null;
 }
 function onMouseDown(e) {
@@ -2659,7 +3278,7 @@ function onKey(e) {
   const ni = '1234'.indexOf(k); if (ni >= 0 && k.length === 1) { const id = G.player.quick[ni]; if (id) useConsumable(G.player, id); return; }
 }
 // ---------- interaction ----------
-function interactRange(t) { if (t.kind === 'obj') { const o = t.ref; const cx = (o.x + (o.w || 1) / 2) * CFG.TILE, cy = (o.y + 0.5) * CFG.TILE; return [cx, cy, o.type === 'node' && o.kind === 'fish' ? 80 : o.type === 'door' ? 52 : 50]; } return [t.ref.x, t.ref.y, 40]; }
+function interactRange(t) { if (t.kind === 'obj') { const o = t.ref; const cx = (o.x + (o.w || 1) / 2) * CFG.TILE, cy = (o.y + 0.5) * CFG.TILE; return [cx, cy, o.type === 'node' && o.kind === 'fish' ? 80 : o.type === 'door' ? 52 : o.kind === 'prisoner' ? 96 : o.type === 'decor' || o.type === 'desk' ? 60 : 50]; } return [t.ref.x, t.ref.y, 40]; }
 function doInteract(t) {
   const P = G.player; P.path = null; P.interact = null;
   if (t.kind === 'drop') return pickupDrop(t.ref, true);
@@ -2672,9 +3291,14 @@ function doInteract(t) {
     case 'board': return UI.board();
     case 'plot': return usePlot(o);
     case 'sign': return UI.dialog(o.name, `<div class="dlg-line">${esc(o.text)}</div>`, [{ label: 'Close', fn: () => UI.close() }]);
-    case 'portal': { const D = DUNGEONS[o.to]; if (D) { const st = BOSSES[Object.keys(BOSSES).find(k => BOSSES[k].where === o.to)]; const bid = Object.keys(BOSSES).find(k => BOSSES[k].where === o.to);
+    case 'portal': { if (o.exit && curMap().id === 'lists' && G.tourney && !G.tourney.done) return UI.choose('Leave the Lists?', 'Leaving now forfeits the tournament (no refund).', [{ label: 'Forfeit and leave', fn: () => { UI.close(); changeMap('world'); } }], () => UI.close());
+      const D = DUNGEONS[o.to]; if (D) { const st = BOSSES[Object.keys(BOSSES).find(k => BOSSES[k].where === o.to)]; const bid = Object.keys(BOSSES).find(k => BOSSES[k].where === o.to);
       return UI.dialog(D.name, `<div>${P.level < D.minLevel ? `<span class="bad">This place is meant for level ${D.rec}+ adventurers (you are level ${P.level}).</span>` : `Recommended level ${D.rec}+.`}</div><div class="small dim">Boss: ${esc(MONSTERS[st.mon].name)} · ${bossStatusText(bid)}</div>`, [{ label: P.level < D.minLevel ? 'Enter anyway' : 'Go down', fn: () => { UI.close(); changeMap(o.to); } }, { label: 'Not yet', fn: () => UI.close() }]); } return changeMap(o.to); }
     case 'chest': if (o.cache) return openCache(o); if (o.opened) return log('Empty.', 'dim'); o.opened = true; { const m = curMap(); if (chance(0.08)) { const mo = makeMonster('mimic', (m.fixedLevel || 12) + 1, (o.x + 0.5) * CFG.TILE, (o.y + 1.6) * CFG.TILE, { noElite: true }); mo.state = 'chase'; mo.target = 'player'; m.monsters.push(mo); log('The chest lurches... it\'s a Mimic!', 'bad'); sfx('bell'); return; } m.drops.push({ x: (o.x + 0.5) * CFG.TILE, y: (o.y + 1.5) * CFG.TILE, gold: randi(20, 60), t: 0, uid: uid() }); m.drops.push({ x: (o.x + 1.2) * CFG.TILE, y: (o.y + 1.5) * CFG.TILE, item: randomDrop((o.ilvl || 13) + randi(0, 2), P.luck, 0.6), t: 0, uid: uid() }); if (chance(0.5)) m.drops.push({ x: (o.x + 0.2) * CFG.TILE, y: (o.y + 1.6) * CFG.TILE, item: { id: 'holy_water', qty: 1 }, t: 0, uid: uid() }); log('You pry open the old chest.', 'gold'); sfx('coin'); } return;
+    case 'decor': return INTERIOR_ACTIONS[o.kind] && INTERIOR_ACTIONS[o.kind](o);
+    case 'desk': return deskClick(o);
+    case 'lists_gate': return listsGate();
+    case 'fountain': P.mana = Math.min(P.maxMana, P.mana + P.maxMana * 0.1); return log('You drink from the Queen\'s Fountain. The water tastes faintly of roses.', 'dim');
     case 'well': P.hp = Math.min(P.maxHp, P.hp + P.maxHp * 0.1); return log('You drink cool water from the well.', 'dim');
   }
 }
@@ -2698,12 +3322,15 @@ function update(dt) {
   if (!G.dead) {
     P.hp = Math.min(P.maxHp, P.hp + P.regen * (P.combatT > 0 ? 0.5 : 2) * dt); P.mana = Math.min(P.maxMana, P.mana + P.manaRegen * dt);
     if (P.poison) { P.poison.t -= dt; P.poisonAcc = (P.poisonAcc || 0) + P.poison.dps * dt; if (P.poisonAcc >= 1) { const a = Math.floor(P.poisonAcc); P.poisonAcc -= a; P.hp -= a; if (P.hp <= 0) playerDie({ name: 'poison' }); } if (P.poison.t <= 0) P.poison = null; }
-    updatePlayerMove(dt);
+    const ox = P.x, oy = P.y; updatePlayerMove(dt);
+    const gate = gateAt(m, P.x, P.y); // v1.3: guarded gates in the castle
+    if (gate) { if (!gateAt(m, ox, oy)) { P.x = ox; P.y = oy; } else if (gate.backX !== undefined) { P.x = (gate.backX + 0.5) * CFG.TILE; P.y = (gate.backY + 0.5) * CFG.TILE; } else { P.x = m.spawn.x * CFG.TILE; P.y = m.spawn.y * CFG.TILE; }
+      P.path = null; P.moveGoal = null; P.interact = null; P.holdMove = false; P.dash = null; refuseEntry(gate); }
   }
   for (const mo of m.monsters) if (m.id !== 'world' || dist(mo.x, mo.y, P.x, P.y) < 60 * CFG.TILE || mo.raid) updateMonster(m, mo, dt);
   if (m.id !== 'world') m.monsters = m.monsters.filter(mo => !(mo.dead && mo.deathT > 1));
   updateProjectiles(m, dt); updateEffects(m, dt);
-  const w = G.maps.world; for (const n of G.npcs) updateNpc(n, w, dt); for (const n of G.trainers) updateNpc(n, w, dt);
+  const w = G.maps.world; for (const n of G.npcs) updateNpc(n, w, dt); for (const n of G.trainers) updateNpc(n, w, dt); for (const n of G.court) updateCourt(n, dt); updateTourney(dt); courtAnnouncements();
   if (m !== w) { w.monsters = w.monsters.filter(mo => !mo.raid); }
   updateNodes(w, dt);
   for (const mo of m.monsters) { if (mo.bubble) { mo.bubble.t -= dt; if (mo.bubble.t <= 0) mo.bubble = null; } if (mo.atkAnim > 0) mo.atkAnim -= dt; }
@@ -2865,16 +3492,19 @@ function render() {
     else if (t === T.LAVA) { const g = 0.5 + Math.sin(now * 2 + x + y * 0.7) * 0.25; ctx.fillStyle = `rgba(255,200,60,${g})`; ctx.fillRect(px + 4 + (v % 10), py + 6 + (v % 14), 8, 4); }
     else if (t === T.FARM) { ctx.fillStyle = 'rgba(0,0,0,0.2)'; for (let k = 4; k < TS; k += 8) ctx.fillRect(px, py + k, TS, 2); }
     else if (t === T.DOCK) { ctx.fillStyle = 'rgba(0,0,0,0.2)'; for (let k = 0; k < TS; k += 8) ctx.fillRect(px + k, py, 1, TS); }
+    else if (t === T.CARPET) { ctx.fillStyle = 'rgba(255,210,80,0.35)'; ctx.fillRect(px, py + 3, TS, 2); ctx.fillRect(px, py + TS - 5, TS, 2); }
+    else if (t === T.SFLOOR) { ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.strokeRect(px + 0.5, py + 0.5, TS - 1, TS - 1); }
+    else if (t === T.GARDEN && v < 40) { ctx.fillStyle = ['#ffe680', '#ff9ad8', '#fff', '#e05050'][v % 4]; ctx.fillRect(px + 6 + v % 18, py + 8 + (v * 3) % 16, 3, 3); }
     else if (t === T.MUD && v < 40) { ctx.fillStyle = 'rgba(80,120,60,0.4)'; ctx.beginPath(); ctx.arc(px + 16, py + 16, 6, 0, 7); ctx.fill(); }
   }
   // tall things in y order: trees/rocks/palisade, buildings, objects, entities
   const list = [];
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { const t = m.tiles[m.idx(x, y)]; if (t === T.TREE || t === T.ROCK || t === T.PALISADE) list.push({ y: (y + 1) * TS, f: drawDeco, x, ty: y, t }); }
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { const t = m.tiles[m.idx(x, y)]; if (t === T.TREE || t === T.ROCK || t === T.PALISADE || t === T.SWALL || t === T.FENCE) list.push({ y: (y + 1) * TS, f: drawDeco, x, ty: y, t }); }
   for (const b of m.buildings) if (b.x + b.w >= x0 && b.x <= x1 && b.y + b.h >= y0 && b.y <= y1) list.push({ y: (b.y + b.h) * TS - 1, f: drawBuilding, b });
   for (const o of m.objects) if (o.x >= x0 && o.x <= x1 && o.y >= y0 && o.y <= y1 && o.type !== 'door') list.push({ y: (o.y + 1) * TS - 2, f: drawObj, o });
   for (const dr of m.drops) list.push({ y: dr.y - 20, f: drawDrop, dr });
   for (const mo of m.monsters) if (Math.abs(mo.x - P.x) < W && Math.abs(mo.y - P.y) < H) list.push({ y: mo.y, f: drawMonster, mo });
-  if (m.id === 'world') for (const n of G.npcs.concat(G.trainers)) if (!n.hidden && Math.abs(n.x - P.x) < W && Math.abs(n.y - P.y) < H) list.push({ y: n.y, f: drawNpc, n });
+  for (const n of mapNpcs(m)) if (!n.hidden && Math.abs(n.x - P.x) < W && Math.abs(n.y - P.y) < H) list.push({ y: n.y, f: drawNpc, n });
   list.push({ y: P.y, f: drawPlayer });
   list.sort((a, b) => a.y - b.y);
   const hov = G.started && !G.paused ? entityUnderMouse() : null; G.hover = hov;
@@ -2890,7 +3520,7 @@ function render() {
   for (const t of G.texts) { ctx.globalAlpha = clamp(1.2 - t.t, 0, 1); ctx.font = `bold ${t.size}px sans-serif`; ctx.fillStyle = '#000'; ctx.fillText(t.text, t.x + 1, t.y - t.t * 30 + 1); ctx.fillStyle = t.color; ctx.fillText(t.text, t.x, t.y - t.t * 30); }
   ctx.globalAlpha = 1;
   const bubbleFor = (e, yoff) => { if (!e.bubble) return; drawBubble(e.x, e.y - yoff, e.bubble.text); };
-  if (m.id === 'world') for (const n of G.npcs.concat(G.trainers)) if (!n.hidden && n.bubble && Math.abs(n.x - P.x) < W / 2 + 50 && Math.abs(n.y - P.y) < H / 2 + 50) bubbleFor(n, 38);
+  for (const n of mapNpcs(m)) if (!n.hidden && n.bubble && Math.abs(n.x - P.x) < W / 2 + 50 && Math.abs(n.y - P.y) < H / 2 + 50) bubbleFor(n, 38);
   for (const mo of m.monsters) if (mo.bubble) bubbleFor(mo, mo.size + 40);
   // labels
   ctx.font = '11px sans-serif';
@@ -2919,7 +3549,7 @@ function monsterHoverSub(r) {
 function drawHover(h) {
   const r = h.ref; let x, y, name, col = '#fff', sub = '';
   if (h.kind === 'monster') { x = r.x; y = r.y - r.size - 16; name = `${r.name}`; sub = monsterHoverSub(r); col = r.rare ? '#ff9b2f' : r.def.boss ? '#ff80ff' : r.elite ? '#ffd24a' : r.level > G.player.level + 3 ? '#ff6060' : r.level < G.player.level - 4 ? '#aaa' : '#fff'; ctx.strokeStyle = '#f44'; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(r.x, r.y + r.size * 0.6, r.size + 4, (r.size + 4) * 0.45, 0, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
-  else if (h.kind === 'npc') { x = r.x; y = r.y - 36; name = r.name; sub = r.trainer ? (r.teaches.startsWith('class') ? CLASSES[r.teaches.split(':')[1]].name + ' trainer' : JOBS[r.teaches.split(':')[1]].name + ' teacher') : `${RACES[r.race].name} ${JOBS[r.job] ? JOBS[r.job].name : r.job} · ${npcActivityText(r)}`; col = r.trainer ? '#ffd24a' : '#bfe3ff'; }
+  else if (h.kind === 'npc') { x = r.x; y = r.y - 36; name = r.name; sub = r.court ? `${r.title} · ${courtActivityText(r)}` : r.trainer ? (r.teaches.startsWith('class') ? CLASSES[r.teaches.split(':')[1]].name + ' trainer' : JOBS[r.teaches.split(':')[1]].name + ' teacher') : `${RACES[r.race].name} ${JOBS[r.job] ? JOBS[r.job].name : r.job} · ${npcActivityText(r)}`; col = r.trainer ? '#ffd24a' : '#bfe3ff'; }
   else if (h.kind === 'drop') return;
   else { const o = r; x = (o.x + (o.w || 1) / 2) * CFG.TILE; y = o.y * CFG.TILE - 8; name = o.type === 'door' ? (o.building.house ? 'House' : o.building.name) : o.name;
     if (o.type === 'node') { const P = G.player; sub = !hasJob(o.job) ? `Needs ${JOBS[o.job].name} job` : jobRank(P, o.job) < o.rank ? `Needs ${JOBS[o.job].name} rank ${o.rank}` : o.charges <= 0 ? 'Depleted' : `${JOBS[o.job].name} · ${o.charges} left`; col = !hasJob(o.job) || jobRank(P, o.job) < o.rank ? '#f99' : '#9f9'; }
@@ -2937,11 +3567,16 @@ function drawDeco(it, now) {
     ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.beginPath(); ctx.ellipse(px + 16, py + 28, 14, 5, 0, 0, 7); ctx.fill();
     ctx.fillStyle = col; ctx.beginPath(); ctx.arc(px + 16, py + 8, 15 * s, 0, 7); ctx.fill(); ctx.fillStyle = shade(col.startsWith('#') ? col : '#2a5a24', 1.25); ctx.beginPath(); ctx.arc(px + 12, py + 3, 7 * s, 0, 7); ctx.fill(); }
   else if (it.t === T.ROCK) { ctx.fillStyle = '#6a665e'; ctx.beginPath(); ctx.moveTo(px + 2, py + 30); ctx.lineTo(px + 6, py + 8); ctx.lineTo(px + 18, py + 2); ctx.lineTo(px + 30, py + 12); ctx.lineTo(px + 30, py + 30); ctx.fill(); ctx.fillStyle = '#8a867c'; ctx.beginPath(); ctx.moveTo(px + 8, py + 10); ctx.lineTo(px + 18, py + 4); ctx.lineTo(px + 22, py + 14); ctx.fill(); }
+  else if (it.t === T.SWALL) { const up = m.tile(it.x, it.ty - 1) === T.SWALL; ctx.fillStyle = '#7a756a'; ctx.fillRect(px, py - 14, TS, TS + 14); ctx.fillStyle = '#958f82'; ctx.fillRect(px, py - 14, TS, up ? 4 : 10);
+    ctx.strokeStyle = 'rgba(0,0,0,0.22)'; ctx.beginPath(); for (let k = 0; k < 3; k++) { const yy = py - 2 + k * 11; ctx.moveTo(px, yy + 0.5); ctx.lineTo(px + TS, yy + 0.5); const o2 = (k + it.x) % 2 ? 8 : 20; ctx.moveTo(px + o2 + 0.5, yy); ctx.lineTo(px + o2 + 0.5, yy + 11); } ctx.stroke();
+    if (!up) { ctx.fillStyle = '#6a655a'; ctx.fillRect(px + 2, py - 20, 10, 7); ctx.fillRect(px + 18, py - 20, 10, 7); } }
+  else if (it.t === T.FENCE) { ctx.fillStyle = '#7a5a30'; ctx.fillRect(px + 2, py + 4, 4, 24); ctx.fillRect(px + 26, py + 4, 4, 24); ctx.fillStyle = '#b08a50'; ctx.fillRect(px, py + 8, TS, 4); ctx.fillRect(px, py + 18, TS, 4); }
   else { ctx.fillStyle = '#6a4a2a'; ctx.fillRect(px + 2, py - 10, 28, 40); ctx.fillStyle = '#8a6a3a'; for (let k = 0; k < 4; k++) { ctx.fillRect(px + 2 + k * 7, py - 12, 6, 40); ctx.beginPath(); ctx.moveTo(px + 2 + k * 7, py - 12); ctx.lineTo(px + 5 + k * 7, py - 17); ctx.lineTo(px + 8 + k * 7, py - 12); ctx.fill(); } }
 }
 function drawBuilding(it) {
   const b = it.b, TS = CFG.TILE, x = b.x * TS, y = b.y * TS, w = b.w * TS, h = b.h * TS;
   ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(x + 6, y + 8, w, h);
+  if (b.stone) return drawStoneBuilding(b);
   ctx.fillStyle = '#c8b090'; ctx.fillRect(x, y + h * 0.35, w, h * 0.65); ctx.strokeStyle = '#5a4030'; ctx.strokeRect(x + 0.5, y + h * 0.35, w - 1, h * 0.65);
   const roof = b.roof || '#8a4a3a';
   ctx.fillStyle = roof; ctx.beginPath(); ctx.moveTo(x - 6, y + h * 0.45); ctx.lineTo(x + w / 2, y - (b.tower ? 40 : 14)); ctx.lineTo(x + w + 6, y + h * 0.45); ctx.closePath(); ctx.fill();
@@ -2977,6 +3612,16 @@ function drawObj(it, now) {
     case 'lamp': ctx.fillStyle = '#333'; ctx.fillRect(px + 14, py - 8, 4, 38); ctx.fillStyle = isNight() ? '#ffe08a' : '#776'; ctx.fillRect(px + 10, py - 14, 12, 10); break;
     case 'portal': ctx.fillStyle = '#111'; ctx.fillRect(px + 2, py + 2, 28, 28); ctx.fillStyle = '#3a3a40'; for (let k = 0; k < 4; k++) ctx.fillRect(px + 4 + k * 2, py + 6 + k * 6, 24 - k * 4, 4); if (o.to === 'crypt') { ctx.fillStyle = `rgba(140,255,220,${0.25 + Math.sin(now * 2) * 0.15})`; ctx.beginPath(); ctx.arc(px + 16, py + 16, 18, 0, 7); ctx.fill(); } break;
     case 'sign': ctx.fillStyle = '#6a4a2a'; ctx.fillRect(px + 14, py + 10, 4, 20); ctx.fillStyle = '#b09060'; ctx.fillRect(px + 4, py + 2, 24, 14); ctx.fillStyle = '#4a3020'; ctx.fillRect(px + 8, py + 6, 16, 2); ctx.fillRect(px + 8, py + 10, 12, 2); break;
+    case 'turret': { const w = 2 * TS; ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(px + 6, py + 8, w, w); ctx.fillStyle = '#857f72'; ctx.fillRect(px - 2, py - 26, w + 4, w + 26); ctx.fillStyle = '#9d978a'; ctx.fillRect(px - 2, py - 26, w + 4, 8);
+      ctx.fillStyle = '#6f6a5e'; for (let k = 0; k < 4; k++) ctx.fillRect(px - 2 + k * 18, py - 36, 10, 10); ctx.fillStyle = '#2a2620'; ctx.fillRect(px + w / 2 - 3, py - 8, 6, 12); break; }
+    case 'portcullis': { const w = (o.w || 3) * TS; ctx.fillStyle = '#6f6a5e'; ctx.fillRect(px - 8, py - 30, w + 16, 16); ctx.fillStyle = '#9d978a'; ctx.fillRect(px - 8, py - 34, w + 16, 5);
+      ctx.strokeStyle = '#3a3630'; ctx.lineWidth = 2; ctx.beginPath(); for (let k = 6; k < w; k += 10) { ctx.moveTo(px + k, py - 14); ctx.lineTo(px + k, py - 6); } ctx.stroke(); ctx.lineWidth = 1; break; }
+    case 'fountain': { const w = 2 * TS; ctx.fillStyle = '#a8a294'; ctx.beginPath(); ctx.ellipse(px + w / 2, py + 18, w / 2, 13, 0, 0, 7); ctx.fill(); ctx.fillStyle = '#4a8ac0'; ctx.beginPath(); ctx.ellipse(px + w / 2, py + 18, w / 2 - 5, 9, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = '#c8c2b4'; ctx.fillRect(px + w / 2 - 3, py - 6, 6, 22); ctx.fillStyle = 'rgba(200,230,255,0.7)'; ctx.beginPath(); ctx.arc(px + w / 2, py - 8 + Math.sin(now * 4) * 1.5, 5, 0, 7); ctx.fill(); break; }
+    case 'lists_gate': ctx.fillStyle = '#7a5a30'; ctx.fillRect(px + 1, py - 14, 5, 44); ctx.fillRect(px + 26, py - 14, 5, 44); ctx.fillStyle = '#8a1a2a'; ctx.fillRect(px + 1, py - 18, 30, 8); ctx.fillStyle = '#ffd24a'; ctx.fillRect(px + 12, py - 17, 8, 6);
+      ctx.fillStyle = '#c0303a'; ctx.beginPath(); ctx.moveTo(px + 3, py - 30); ctx.lineTo(px + 3, py - 18); ctx.lineTo(px + 14, py - 24); ctx.fill(); break;
+    case 'desk': ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(px + 2, py + 22, 30, 8); ctx.fillStyle = '#6a4424'; ctx.fillRect(px + 1, py + 8, 30, 14); ctx.fillStyle = '#8a5a30'; ctx.fillRect(px + 1, py + 6, 30, 4); ctx.fillStyle = '#f0e8d0'; ctx.fillRect(px + 6, py + 3, 9, 5); ctx.fillStyle = o.who === 'treasurer' ? '#ffd24a' : '#333'; ctx.fillRect(px + 20, py + 2, 5, 5); break;
+    case 'decor': drawDecor(o, px, py, now); break;
     case 'chest': ctx.fillStyle = o.opened ? '#5a4030' : '#8a5a2a'; ctx.fillRect(px + 4, py + 10, 24, 18); ctx.fillStyle = '#d0a040'; ctx.fillRect(px + 4, py + 16, 24, 3); ctx.fillRect(px + 14, py + 14, 4, 6); break;
   }
 }
@@ -3005,6 +3650,7 @@ function drawPerson(x, y, o, now) {
 function raceLook(race) { return { ears: race === 'elf', beard: race === 'dwarf', tusks: race === 'orc', small: race === 'halfling' || race === 'dwarf', skin: RACES[race].color }; }
 function drawNpc(it, now) {
   const n = it.n; const L = raceLook(n.race);
+  if (n.court) return drawCourtier(n, L, now);
   const tool = { miner: '#999', woodcutter: '#8a5a2b', guard: '#ccd', fisher: '#a87', hunter: '#963' }[n.job];
   drawPerson(n.x, n.y, Object.assign(L, { tunic: n.job === 'guard' ? '#6a7a9a' : n.color, hair: n.hair, moving: n.moving, facing: n.facing, atk: n.atkAnim || (n.state === 'busy' && n.task && ['gather', 'craft'].includes(n.task.work) ? (Math.sin(now * 6) > 0.6 ? 0.1 : 0) : 0), weapon: !!tool || n.state === 'fight', weaponColor: tool, flash: n.hitFlash > 0, hat: n.trainer ? n.color : n.job === 'guard' ? '#556' : null, cape: n.trainer ? '#ffd24a' : null }), now);
   if (n.trainer) { const P = G.player; const [k, v] = n.teaches.split(':'); const learned = k === 'job' ? P.jobs[v] : P.classes[v]; if (!learned) { ctx.fillStyle = '#ffd24a'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('!', n.x, n.y - 36 - Math.abs(Math.sin(now * 3)) * 4); } }
@@ -3094,13 +3740,14 @@ function drawMinimap() {
   if (m.id === 'world') { c.font = 'bold 10px sans-serif'; c.textAlign = 'center';
     for (const p of Object.values(m.pois)) { if (!P.discovered[p.id]) continue; const [x, y] = toS(p.x, p.y); if (x < -5 || y < -5 || x > S + 5 || y > S + 5) continue; c.fillStyle = poiColor(p); c.fillText(poiIcon(p), x, y + 4); }
     for (const n of G.npcs) if (!n.hidden) { const [x, y] = toS(n.x / CFG.TILE, n.y / CFG.TILE); c.fillStyle = '#9cf'; c.fillRect(x - 1, y - 1, 2, 2); }
+    for (const n of G.court || []) if (!n.hidden && n.map === 'world') { const [x, y] = toS(n.x / CFG.TILE, n.y / CFG.TILE); c.fillStyle = n.guard ? '#e66' : '#d9f'; c.fillRect(x - 1, y - 1, 2, 2); }
     for (const n of G.trainers) { const [x, y] = toS(n.x / CFG.TILE, n.y / CFG.TILE); c.fillStyle = '#ffd24a'; c.fillRect(x - 1.5, y - 1.5, 3, 3); } }
   for (const mo of m.monsters) if (!mo.dead && m.fog[m.idx(clamp(mo.x / CFG.TILE | 0, 0, m.w - 1), clamp(mo.y / CFG.TILE | 0, 0, m.h - 1))]) { const [x, y] = toS(mo.x / CFG.TILE, mo.y / CFG.TILE); c.fillStyle = mo.def.boss ? '#f0f' : '#f44'; c.fillRect(x - 1.5, y - 1.5, mo.def.boss ? 5 : 3, mo.def.boss ? 5 : 3); }
   c.fillStyle = '#fff'; c.beginPath(); c.arc(S / 2, S / 2, 3, 0, 7); c.fill();
   if (isNight() || m.dark) { c.fillStyle = 'rgba(10,14,40,0.25)'; c.fillRect(0, 0, S, S); }
 }
 function poiBoss(p) { return p.lair || (p.dungeon && Object.keys(BOSSES).find(k => BOSSES[k].where === p.dungeon)); }
-function poiIcon(p) { const b = poiBoss(p); if (!b) return '★'; return bossAvailable(b) ? '☠' : '✓'; }
+function poiIcon(p) { if (p.castle) return '♛'; const b = poiBoss(p); if (!b) return '★'; return bossAvailable(b) ? '☠' : '✓'; }
 function poiColor(p) { const b = poiBoss(p); if (!b) return '#ffd24a'; if (!bossAvailable(b)) return '#8f8'; return p.dungeon ? '#d0f' : '#ff5050'; }
 function drawBigMap(cvs) {
   const c = cvs.getContext('2d'), m = curMap(), P = G.player; const sc = Math.min(cvs.width / m.w, cvs.height / m.h);
@@ -3109,6 +3756,50 @@ function drawBigMap(cvs) {
   if (m.id === 'world') for (const p of Object.values(m.pois)) { if (!P.discovered[p.id] || p.town) continue; c.fillStyle = poiColor(p); c.fillText(poiIcon(p) + ' ' + p.name, p.x * sc, p.y * sc - 4); }
   if (m.id === 'world') { c.fillStyle = '#fff'; c.fillText('Hearthvale', m.town.x * sc, m.town.y * sc - 30); }
   c.fillStyle = '#fff'; c.strokeStyle = '#000'; c.beginPath(); c.arc(P.x / CFG.TILE * sc, P.y / CFG.TILE * sc, 5, 0, 7); c.fill(); c.stroke();
+}
+
+// ---------- v1.3: castle drawing ----------
+function mapNpcs(m) { const c = (G.court || []).filter(n => n.map === m.id); return m.id === 'world' ? G.npcs.concat(G.trainers, c) : c; }
+function drawStoneBuilding(b) {
+  const TS = CFG.TILE, x = b.x * TS, y = b.y * TS, w = b.w * TS, h = b.h * TS, tall = b.keep ? 40 : b.tower ? 56 : 12;
+  ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fillRect(x + 6, y + 8, w, h);
+  ctx.fillStyle = b.keep ? '#8a8476' : '#a39d90'; ctx.fillRect(x, y - tall, w, h + tall);
+  ctx.strokeStyle = 'rgba(0,0,0,0.13)'; ctx.beginPath(); for (let yy = y - tall + 10; yy < y + h; yy += 12) { ctx.moveTo(x, yy + 0.5); ctx.lineTo(x + w, yy + 0.5); } ctx.stroke();
+  ctx.fillStyle = b.roof || '#555'; ctx.fillRect(x - 3, y - tall - 6, w + 6, Math.min(h * 0.45, 40));
+  ctx.fillStyle = shade(b.roof || '#555555', 0.75); ctx.fillRect(x - 3, y - tall - 6 + Math.min(h * 0.45, 40) - 5, w + 6, 5);
+  ctx.fillStyle = '#7a7468'; for (let k = 0; k < w; k += 16) ctx.fillRect(x + k, y - tall - 14, 9, 8);
+  if (b.tower) { ctx.fillStyle = b.roof; ctx.beginPath(); ctx.moveTo(x - 6, y - tall - 12); ctx.lineTo(x + w / 2, y - tall - 52); ctx.lineTo(x + w + 6, y - tall - 12); ctx.fill(); }
+  if (b.keep) { ctx.fillStyle = '#8a1a2a'; for (const fx of [x + 24, x + w - 40]) ctx.fillRect(fx, y - tall + 30, 16, 46); ctx.fillStyle = '#ffd24a'; for (const fx of [x + 28, x + w - 36]) ctx.fillRect(fx, y - tall + 40, 8, 8);
+    ctx.strokeStyle = '#333'; ctx.beginPath(); ctx.moveTo(x + w / 2, y - tall - 14); ctx.lineTo(x + w / 2, y - tall - 44); ctx.stroke(); ctx.fillStyle = '#8a1a2a'; ctx.fillRect(x + w / 2, y - tall - 44, 18, 11); }
+  ctx.fillStyle = isNight() ? '#ffd27a' : '#3a4a5a'; for (let k = 1; k < b.w - 1; k += 2) { ctx.fillRect(x + k * TS + 11, y + h * 0.4, 8, 12); ctx.beginPath(); ctx.arc(x + k * TS + 15, y + h * 0.4, 4, Math.PI, 0); ctx.fill(); }
+  const dx = b.doorX * TS, dy = b.doorY * TS; ctx.fillStyle = '#3a2414';
+  if (b.door === 's') { ctx.fillRect(dx + 6, dy + TS - 24, 20, 24); ctx.beginPath(); ctx.arc(dx + 16, dy + TS - 24, 10, Math.PI, 0); ctx.fill(); } else ctx.fillRect(b.door === 'e' ? dx + TS - 10 : dx, dy + 4, 10, 24);
+  const P = G.player; if (dist(P.x / TS, P.y / TS, b.outX, b.outY) < 12) { ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; const nm = b.name; const tw = ctx.measureText(nm).width + 10; ctx.fillStyle = 'rgba(30,20,10,0.8)'; ctx.fillRect(x + w / 2 - tw / 2, y + h * 0.62, tw, 15); ctx.fillStyle = '#ffe8b0'; ctx.fillText(nm, x + w / 2, y + h * 0.62 + 11); }
+}
+function drawDecor(o, px, py, now) {
+  const k = o.kind;
+  if (k === 'table') { ctx.fillStyle = '#6a4424'; ctx.fillRect(px, py + 6, 32, 20); ctx.fillStyle = '#8a5a30'; ctx.fillRect(px, py + 4, 32, 4); if (feastNight() && curMap().id === 'greathall') { ctx.fillStyle = '#d0a040'; ctx.beginPath(); ctx.arc(px + 10, py + 12, 4, 0, 7); ctx.fill(); ctx.fillStyle = '#b04a2a'; ctx.beginPath(); ctx.arc(px + 22, py + 14, 5, 0, 7); ctx.fill(); } }
+  else if (k === 'hearth') { ctx.fillStyle = '#5a5650'; ctx.fillRect(px, py, 32, 30); ctx.fillStyle = `rgba(255,${130 + Math.sin(now * 7 + px) * 40 | 0},40,0.95)`; ctx.fillRect(px + 7, py + 10, 18, 14); }
+  else if (k === 'candles') { ctx.fillStyle = '#c8b060'; ctx.fillRect(px + 14, py + 6, 4, 24); ctx.fillRect(px + 6, py + 8, 20, 3); ctx.fillStyle = '#ffe08a'; for (const cx of [7, 15, 23]) ctx.fillRect(px + cx, py + 1, 3, 6); }
+  else if (k === 'throne') { ctx.fillStyle = '#d0a040'; ctx.fillRect(px + 4, py - 14, 24, 40); ctx.fillStyle = '#8a1a2a'; ctx.fillRect(px + 8, py - 8, 16, 28); ctx.fillStyle = '#ffd24a'; ctx.fillRect(px + 10, py - 20, 4, 6); ctx.fillRect(px + 18, py - 20, 4, 6); }
+  else if (k === 'shelf') { ctx.fillStyle = '#5a3a20'; ctx.fillRect(px + 1, py - 10, 30, 40); for (let r = 0; r < 4; r++) for (let c = 0; c < 5; c++) { ctx.fillStyle = ['#8a2a2a', '#2a4a8a', '#3a6a2a', '#8a6a2a', '#5a2a6a'][(r + c + o.x) % 5]; ctx.fillRect(px + 3 + c * 5.5, py - 8 + r * 10, 4, 8); } }
+  else if (k === 'coffer') { ctx.fillStyle = '#6a3a1a'; ctx.fillRect(px + 3, py + 8, 26, 20); ctx.fillStyle = '#ffd24a'; ctx.fillRect(px + 3, py + 14, 26, 3); ctx.fillRect(px + 13, py + 12, 6, 8); }
+  else if (k === 'bed') { ctx.fillStyle = '#6a4424'; ctx.fillRect(px + 2, py, 28, 30); ctx.fillStyle = '#8a1a2a'; ctx.fillRect(px + 4, py + 8, 24, 20); ctx.fillStyle = '#f0e8d0'; ctx.fillRect(px + 6, py + 2, 20, 6); }
+  else if (k === 'bars') { ctx.strokeStyle = '#333'; ctx.lineWidth = 3; ctx.beginPath(); for (let k2 = 4; k2 < 32; k2 += 8) { ctx.moveTo(px + k2, py - 10); ctx.lineTo(px + k2, py + 30); } ctx.stroke(); ctx.lineWidth = 1; }
+  else if (k === 'prisoner') { drawPerson(px + 16, py + 18, Object.assign(raceLook('human'), { tunic: '#6a6458', hair: '#3a2a1a' }), now); }
+  else if (k === 'lectern') { ctx.fillStyle = '#5a3a20'; ctx.fillRect(px + 12, py + 10, 8, 20); ctx.fillStyle = '#8a5a30'; ctx.fillRect(px + 4, py + 4, 24, 8); const R = royal(); ctx.fillStyle = R.lecternDay === gameDay() ? '#aaa' : `rgba(180,140,255,${0.6 + Math.sin(now * 3) * 0.3})`; ctx.fillRect(px + 8, py + 1, 16, 5); }
+  else if (k === 'circle') { ctx.strokeStyle = `rgba(170,120,255,${0.5 + Math.sin(now * 2) * 0.25})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px + 16, py + 16, 14, 0, 7); ctx.stroke(); ctx.lineWidth = 1; }
+  else if (k === 'crate') { ctx.fillStyle = '#7a5a30'; ctx.beginPath(); ctx.ellipse(px + 16, py + 16, 11, 13, 0, 0, 7); ctx.fill(); ctx.fillStyle = '#4a3a20'; ctx.fillRect(px + 5, py + 10, 22, 2); ctx.fillRect(px + 5, py + 20, 22, 2); }
+  else if (k === 'desk') { ctx.fillStyle = '#6a4424'; ctx.fillRect(px + 1, py + 8, 30, 16); ctx.fillStyle = '#ffd24a'; ctx.fillRect(px + 8, py + 4, 6, 4); ctx.fillRect(px + 18, py + 5, 6, 3); }
+  else if (k === 'stairs') { ctx.fillStyle = '#5a5650'; for (let k2 = 0; k2 < 4; k2++) ctx.fillRect(px + 2 + k2 * 2, py + 4 + k2 * 6, 28 - k2 * 4, 5); }
+}
+function drawCourtier(n, L, now) {
+  const tunic = n.guard ? '#8a1a2a' : n.color, hat = n.guard ? '#7a7a88' : null;
+  drawPerson(n.x, n.y, Object.assign(L, { tunic, hair: n.hair, moving: n.moving, facing: n.facing, atk: n.atkAnim || 0, weapon: n.guard || n.state === 'fight', weaponColor: '#ccd', flash: n.hitFlash > 0, hat, cape: n.cape || (n.guard ? '#ffd24a' : null) }), now);
+  if (n.crown) { const s = L.small ? 0.85 : 1; ctx.fillStyle = '#ffd24a'; const cy = n.y - 27 * s; ctx.beginPath(); ctx.moveTo(n.x - 7, cy + 5); ctx.lineTo(n.x - 7, cy - 2); ctx.lineTo(n.x - 3.5, cy + 2); ctx.lineTo(n.x, cy - 4); ctx.lineTo(n.x + 3.5, cy + 2); ctx.lineTo(n.x + 7, cy - 2); ctx.lineTo(n.x + 7, cy + 5); ctx.fill(); }
+  const st = chainStep(), mk = st && st.giver === n.cid && (!royal().cqActive || st.done(royal())) ? '♛' : npcMarker(n);
+  if (mk) { ctx.fillStyle = mk === '?' ? '#7fff7f' : '#ffd24a'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center'; ctx.strokeStyle = '#000'; ctx.lineWidth = 3; const yy = n.y - 38 - Math.abs(Math.sin(now * 3)) * 4; ctx.strokeText(mk, n.x, yy); ctx.fillText(mk, n.x, yy); ctx.lineWidth = 1; }
+  if (n.hp < n.maxHp) { ctx.fillStyle = '#300'; ctx.fillRect(n.x - 14, n.y - 34, 28, 3); ctx.fillStyle = '#4c4'; ctx.fillRect(n.x - 14, n.y - 34, 28 * n.hp / n.maxHp, 3); }
 }
 
 </script>
