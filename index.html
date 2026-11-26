@@ -21,7 +21,7 @@
 #chattabs{display:flex;gap:2px;padding:3px;border-bottom:1px solid #3a3020}#chattabs button{font-size:10.5px;padding:2px 6px}#chattabs button.on{background:#5a4a28;color:#ffd24a}#chattabs .x{margin-left:auto}
 #chatbody{flex:1;overflow-y:auto;padding:3px 6px;font-size:12px;line-height:1.35;user-select:text}.cl{border-bottom:1px solid rgba(255,255,255,.03)}.cl .ct{color:#6a6458;font-size:10px}
 .cl.gold{color:#ffd24a}.cl.bad{color:#ff7070}.cl.warn{color:#ffb070}.cl.job{color:#7fe3ff}.cl.boss{color:#e0a0ff}.cl.green{color:#4fd35a}.cl.blue{color:#4f9bff}.cl.purple{color:#b45cff}.cl.orange{color:#ff9a30}.cl.dim{color:#a8a294}.cl.npc{color:#cfc6b0}
-body.chaton #log{display:none}#chatbtn.on{background:#5a4a28;color:#ffd24a}
+body.chaton #log{display:none}.row button.on{background:#5a4a28;color:#ffd24a}#chatbtn.on{background:#5a4a28;color:#ffd24a}
 .pos{color:#6cf06c}.neg{color:#ff5a5a}
 .choices{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px;margin:8px 0}
 button.choice{display:flex;flex-direction:column;align-items:flex-start;text-align:left;padding:8px 10px 8px 26px;position:relative;min-height:44px;font-size:13px}
@@ -90,7 +90,7 @@ table.help td{padding:4px 8px;border-bottom:1px solid #2a2016;vertical-align:top
   </div>
   <div id="xpbars"><div class="xb" id="xbL" data-tt="1"><div class="xf"></div><span></span></div><div class="xb" id="xbC" data-tt="1"><div class="xf"></div><span></span></div><div class="xb" id="xbJ" data-tt="1"><div class="xf"></div><span></span></div></div>
   <div id="chatlog"><div id="chattabs"></div><div id="chatbody"></div></div>
-  <div id="hotkeys"><button onclick="UI.toggle('inv')">Bag (I)</button><button onclick="UI.toggle('char')">Char (C)</button><button onclick="UI.toggle('jobs')">Jobs (J)</button><button onclick="UI.toggle('map')">Map (M)</button><button id="chatbtn" onclick="UI.toggleChat()">Chat (L)</button><button onclick="UI.menu()">Menu (Esc)</button></div>
+  <div id="hotkeys"><button onclick="UI.toggle('inv')">Bag (I)</button><button onclick="UI.toggle('char')">Char (C)</button><button onclick="UI.toggle('jobs')">Jobs (J)</button><button onclick="UI.toggle('party')">Party (K)</button><button onclick="UI.toggle('map')">Map (M)</button><button id="chatbtn" onclick="UI.toggleChat()">Chat (L)</button><button onclick="UI.menu()">Menu (Esc)</button></div>
 </div>
 <div id="panel"></div><div id="death"></div><div id="title"></div><div id="tooltip"></div>
 <script>
@@ -99,7 +99,8 @@ table.help td{padding:4px 8px;border-bottom:1px solid #2a2016;vertical-align:top
 // HEARTHVALE - tunable constants. Change numbers here to rebalance.
 // ============================================================
 const CFG = {
-  VERSION: '1.3.0',
+  VERSION: '1.4.0',
+  PET_REST_SEC: 60, FALCON_RANGE: 16, COMP_WORK_MAX_HOURS: 48, // v1.4 companions
   TILE: 32,                 // pixels per tile
   WORLD_W: 240, WORLD_H: 240,
   SEED: 20261124,
@@ -1718,7 +1719,7 @@ function updateMonster(m, mo, dt) {
   }
   if (mo.state === 'chase') {
     const t = targetPos(mo);
-    if (!t || (mo.target === 'player' && (G.dead || P.stealth || P.map !== m.id)) || (mo.target !== 'player' && (t.hidden || t.ko))) { mo.state = mo.raid ? 'raid' : 'return'; mo.target = null; return; }
+    if (!t || (mo.target === 'player' && (G.dead || P.stealth || P.map !== m.id)) || (mo.target !== 'player' && (t.hidden || t.ko || (t.map && t.map !== m.id)))) { mo.state = mo.raid ? 'raid' : 'return'; mo.target = null; return; }
     const td = dist(mo.x, mo.y, t.x, t.y);
     if (!mo.raid && dist(mo.x, mo.y, mo.spawnX, mo.spawnY) > 520 && td > 120) { mo.state = 'return'; mo.target = null; return; }
     const R = mo.def.ranged; const reach = R ? R.range : mo.size + 16 + 8;
@@ -1767,6 +1768,7 @@ function killMonster(mo) {
   if (mo.bossId === 'warden') log('The Hollow Warden crumbles to dust. The crypt falls silent.', 'gold');
 }
 function hurtNpc(n, dmg, src) {
+  if (n.onHurt) return n.onHurt(dmg, src); // v1.4 pets + companion
   if (n.ko || n.hidden) return; n.hp -= Math.round(dmg * randf(0.85, 1.15) * (n.job === 'guard' || n.guard ? 0.5 : 1)); n.hitFlash = 0.12;
   if (n.job !== 'guard' && !n.guard && n.state !== 'flee') { n.state = 'flee'; n.path = null; npcSay(n, pick(NPC_LINES.flee)); }
   if (n.hp <= 0) { n.ko = true; n.hidden = true; log(`${n.name} was knocked out by ${src.name}! They will recover at home by morning.`, 'warn'); }
@@ -2166,6 +2168,7 @@ function npcGoTo(n, m, tx, ty) {
   if (!n.path.length) { n.path = null; n.state = n.act === 'sleep' ? 'sleep' : 'busy'; n.waitT = n.task ? n.task.dur : 10; if (n.act === 'sleep') n.hidden = true; }
 }
 function updateNpc(n, m, dt) {
+  if (n.withPlayer) { n.hidden = true; return; } // away as the player's companion
   if (n.hitFlash > 0) n.hitFlash -= dt;
   if (n.bubble) { n.bubble.t -= dt; if (n.bubble.t <= 0) n.bubble = null; }
   if (n.trainer) { n.chatT -= dt; if (n.chatT <= 0) { n.chatT = randf(25, 50); if (dist(n.x, n.y, G.player.x, G.player.y) < 300) npcSay(n, n.teaches.startsWith('class') ? 'Looking to learn the ways of the ' + CLASSES[n.teaches.split(':')[1]].name + '?' : 'Want to learn the ' + JOBS[n.teaches.split(':')[1]].name + ' trade?'); } return; }
@@ -2430,9 +2433,9 @@ const ROYAL_GUARD_POSTS = [
 ];
 function genCourt(m) {
   const out = [];
-  for (const d of COURT_DEFS) out.push(Object.assign({ id: 'court_' + d.cid, uid: 'court_' + d.cid, court: true, job: d.cid, map: 'world', x: 0, y: 0, state: 'idle', hidden: false, chatT: 10 + rand() * 30, speed: 66, hp: 999, maxHp: 999, mood: 'dutiful', affinity: 0, recruitable: !d.noFavors, home: null }, d));
+  for (const d of COURT_DEFS) out.push(Object.assign({ id: 'court_' + d.cid, uid: 'court_' + d.cid, court: true, job: d.cid, map: 'world', x: 0, y: 0, state: 'idle', hidden: false, chatT: 10 + rand() * 30, speed: 66, hp: 999, maxHp: 999, mood: 'dutiful', affinity: 0, recruitable: !d.crown, home: null }, d));
   ROYAL_GUARD_POSTS.forEach((g, i) => out.push({ id: 'court_guard' + i, uid: 'court_guard' + i, court: true, guard: true, cid: 'royalguard', job: 'royalguard', title: 'Royal Guard', name: g.name, race: ['human', 'dwarf', 'human', 'orc', 'human', 'elf', 'human', 'dwarf', 'human'][i], color: '#7a1a2a', hair: '#3a2a1a',
-    level: 25, noFavors: true, map: 'world', post: g.post, patrol: g.patrol, pi: 0, x: (m.cx + g.post[0] + 0.5) * CFG.TILE, y: (m.cy + g.post[1] + 0.5) * CFG.TILE, state: 'idle', hidden: false, chatT: 20 + rand() * 40, speed: 70, hp: 900, maxHp: 900, mood: 'watchful', affinity: 0, combat: { atk: 60, def: 40 }, home: null }));
+    level: 25, noFavors: true, map: 'world', post: g.post, patrol: g.patrol, pi: 0, x: (m.cx + g.post[0] + 0.5) * CFG.TILE, y: (m.cy + g.post[1] + 0.5) * CFG.TILE, state: 'idle', hidden: false, chatT: 20 + rand() * 40, speed: 70, hp: 900, maxHp: 900, mood: 'watchful', affinity: 0, recruitable: true, combat: { atk: 60, def: 40 }, home: null }));
   for (const n of out) if (n.guard) n.home = { outX: m.cx + n.post[0], outY: m.cy + n.post[1] };
   return out;
 }
@@ -2455,6 +2458,7 @@ function courtArrive(n) { const sp = n.dest; n.path = null; n.travelT = undefine
   if (!sp) return; n.map = sp.map; n.x = (sp.tx + 0.5) * CFG.TILE; n.y = (sp.ty + 0.5) * CFG.TILE; n.hidden = !!sp.hide; }
 function courtSnap(n) { n.goal = courtScheduleKey(n); n.dest = courtSpot(n.goal); courtArrive(n); }
 function updateCourt(n, dt) {
+  if (n.withPlayer) { n.hidden = true; return; }
   if (n.hitFlash > 0) n.hitFlash -= dt;
   if (n.bubble) { n.bubble.t -= dt; if (n.bubble.t <= 0) n.bubble = null; }
   if (n.guard) return updateRoyalGuard(n, dt);
@@ -2509,11 +2513,12 @@ function startCastleRaid(m) {
   for (let k = 0; k < n; k++) { const mo = makeMonster(key, 2 + G.player.level * 0.5, (sx + 0.5) * CFG.TILE + randf(-60, 60), (sy + 0.5) * CFG.TILE + randf(-26, 26), { raid: true }); mo.state = 'raid'; mo.route = route.map(p => p.slice()); if (!m.solidPx(mo.x, mo.y)) m.monsters.push(mo); }
   log(`Raiders storm the castle's ${west ? 'west' : 'east'} sally port! The royal guard holds the gate.`, 'warn'); sfx('bell'); G.lastRaid = { castle: true, west, n };
 }
-function onRaidKill(mo) { const R = royal(); R.raidKills++; const night = Math.floor(G.time / CFG.DAY_LENGTH_SEC + 0.25);
+function onRaidKill(mo, assist) { const R = royal(); if (!assist) R.raidKills++; const night = Math.floor(G.time / CFG.DAY_LENGTH_SEC + 0.25);
   if (R.raidNight !== night) { R.raidNight = night; R.raidStand = 0; }
-  if (R.raidStand < CFG.RAID_STANDING_PER_NIGHT) { R.raidStand++; addStanding(1, 'defending the realm'); } }
+  if (R.raidStand < CFG.RAID_STANDING_PER_NIGHT) { R.raidStand++; addStanding(1, assist ? 'helping the guard' : 'defending the realm'); } }
 const _killMonsterBase = killMonster;
-killMonster = function (mo) { const raid = mo.raid && !mo.dead, mine = mo.lastHitBy === 'player'; _killMonsterBase(mo); if (raid && mine && G.player) onRaidKill(mo); };
+killMonster = function (mo) { const raid = mo.raid && !mo.dead, mine = mo.lastHitBy === 'player'; _killMonsterBase(mo); if (!raid || !G.player) return; const P = G.player;
+  if (mine) onRaidKill(mo); else if (P.map === 'world' && dist(mo.x, mo.y, P.x, P.y) < 12 * CFG.TILE) onRaidKill(mo, true); }; // v1.4: raiders the guards finish near you count for standing too
 // ---- the King's Lists (weekly tournament vs monsters, no PvP) ----
 function tourneyMonsters(lvl) { const d = (lvl - 1) / CFG.ZONE_LEVEL_PER_TILE + CFG.TOWN_RADIUS; const z = ZONES.find(zz => zz.maxD > d && zz.monsters && zz.monsters.length) || ZONES[1];
   return z.monsters.filter(k => !MONSTERS[k].passive && !MONSTERS[k].boss && !MONSTERS[k].stationary); }
@@ -2568,8 +2573,9 @@ const INTERIOR_ACTIONS = {
 const ROYAL_SERVICES = {
   barracks: (b, btns) => { const P = G.player, R = royal(); btns.push({ label: R.drillDay === gameDay() ? 'Drilled today' : '⚔ Drill with the Royal Guard', disabled: R.drillDay === gameDay(), tt: 'Once a day. Guard job XP, or a little combat XP.', fn: () => { R.drillDay = gameDay(); if (P.jobs.guard) gainJobXp(P, 'guard', 25 + P.level * 3); gainXp(P, 10 + P.level * 4); log('You drill with the royal guard until your arms ache.', 'job'); UI.building(b); } });
     return '<div>The royal guard sleeps and trains here. Sir Roderic Vane, the Constable, commands them and Captain Hale\'s town guard.</div>'; },
-  stables: (b, btns) => { btns.push({ label: '🐎 Buy a mount (coming in a later update)', disabled: true, fn: () => 0 }); return `<div>The royal horses. Marshal Hollis Brand also runs the King's Lists: a tournament every ${WEEKDAYS[CFG.TOURNEY_WEEKDAY]} from 9:00 to 17:00${daysUntil(CFG.TOURNEY_WEEKDAY) ? ` (in ${daysUntil(CFG.TOURNEY_WEEKDAY)} days)` : ' (today!)'}.</div>`; },
-  mews: (b, btns) => { btns.push({ label: '🦅 Adopt a falcon or hound (coming in a later update)', disabled: true, fn: () => 0 }); return '<div>Hooded falcons and lazy hounds. Wren Ashby keeps them. Pets and companions arrive in a later update.</div>'; },
+  stables: (b, btns) => { btns.push({ label: '🐎 Buy a horse (Marshal Hollis Brand)', fn: () => UI.horseShop() }); if (G.player.horses.length) btns.push({ label: '🐴 Your horses (Party panel)', fn: () => UI.party() }); return `<div>The royal horses. Marshal Hollis Brand also runs the King's Lists: a tournament every ${WEEKDAYS[CFG.TOURNEY_WEEKDAY]} from 9:00 to 17:00${daysUntil(CFG.TOURNEY_WEEKDAY) ? ` (in ${daysUntil(CFG.TOURNEY_WEEKDAY)} days)` : ' (today!)'}.</div>`; },
+  mews: (b, btns) => { btns.push({ label: `🐕 Adopt a hound (${PET_DEFS.hound.price}g)`, disabled: G.player.gold < PET_DEFS.hound.price, tt: PET_DEFS.hound.desc, fn: () => { buyPet('hound'); UI.building(b); } }); if (G.player.pets.length) btns.push({ label: '🐾 Your pets (Party panel)', fn: () => UI.party() });
+    return `<div>Hooded falcons and lazy hounds. The kennel boys will sell you a trained hound. For a falcon, speak to Wren Ashby herself (${PET_DEFS.falcon.price}g).</div>`; },
   forge: (b, btns) => `<div>The royal stations outside (Royal Anvil, Workbench and Loom) turn relic gear into <b>Royal</b> relic gear: a boss trophy, a Glimmering Essence and a <b>Royal Commission</b>. You hold ${invCount(G.player.inv, 'royal_writ')} Royal Commission(s).</div><div class="small dim">Commissions come from the King's charges, and once a week from the Treasurer (Freedom of the Keep).</div>`,
   kitchens: (b, btns) => { const R = royal(), P = G.player; btns.push({ label: R.mealDay === gameDay() ? 'Fed today' : '🍲 Ask the Head Cook for a meal', disabled: R.mealDay === gameDay() || R.standing < 10, tt: R.standing < 10 ? 'Needs Royal Standing 10.' : 'Once a day.', fn: () => { R.mealDay = gameDay(); invAdd(P.inv, R.standing >= 60 ? 'kings_pie' : 'bread', R.standing >= 60 ? 1 : 3); log('Brannagh shoves a warm parcel into your hands. "Eat. You look thin."', 'gold'); UI.building(b); } });
     return '<div>Steam, shouting and the smell of bread. The kitchens feed the whole court.</div>'; },
@@ -2613,6 +2619,8 @@ function courtButtons(n, btns) {
   if (n.cid === 'treasurer') { const can = R.pass >= 3 && R.writWeek !== gameWeek();
     btns.push({ label: `📜 Buy a Royal Commission (${CFG.WRIT_PRICE}g, once a week)`, disabled: !can || P.gold < CFG.WRIT_PRICE, tt: R.pass < 3 ? 'Needs Freedom of the Keep.' : R.writWeek === gameWeek() ? 'Already bought this week.' : 'Needed for royal relic gear.', fn: () => { P.gold -= CFG.WRIT_PRICE; R.writWeek = gameWeek(); invAdd(P.inv, 'royal_writ', 1); log('The Treasurer seals a Royal Commission and slides it across the table.', 'gold'); sfx('coin'); UI.npc(n); } }); }
   if (n.cid === 'marshal') btns.push({ label: tourneyOpen() ? '🏆 Enter the King\'s Lists (25g)' : `🏆 Next tournament: ${WEEKDAYS[CFG.TOURNEY_WEEKDAY]} 9:00-17:00`, disabled: !tourneyOpen() || R.tourneyWeek === gameWeek(), tt: R.tourneyWeek === gameWeek() ? 'You already competed this week.' : 'Three bouts against monsters at your level. Yield safely at low health.', fn: () => startTourney() });
+  if (n.cid === 'marshal') btns.push({ label: '🐎 Buy a horse', fn: () => UI.horseShop() });
+  if (n.cid === 'falconer') btns.push({ label: `🦅 Buy a trained falcon (${PET_DEFS.falcon.price}g)`, disabled: P.gold < PET_DEFS.falcon.price, tt: PET_DEFS.falcon.desc, fn: () => { buyPet('falcon'); UI.npc(n); } });
   if (n.cid === 'courtmage') btns.push({ label: '📚 "Where can I learn about the monsters?"', fn: () => UI.dialog(n.name, '<div class="dlg-line">"The Library holds the court\'s notes on every great beast in the vale. Some of the older reports are restricted, but the King may grant you the right to read them."</div>', [{ label: 'Back', fn: () => UI.npc(n) }]) });
 }
 function listsGate() { const R = royal(); if (!tourneyOpen()) return UI.dialog('The King\'s Lists', `<div class="dlg-line">The tiltyard is empty. The tournament runs every ${WEEKDAYS[CFG.TOURNEY_WEEKDAY]} from 9:00 to 17:00${daysUntil(CFG.TOURNEY_WEEKDAY) ? ` (in ${daysUntil(CFG.TOURNEY_WEEKDAY)} days)` : ''}.</div>`, [{ label: 'Close', fn: () => UI.close() }]);
@@ -2634,7 +2642,7 @@ Object.assign(NPC_LINES, {
   courtmage: ['Fire stops the treant\'s mending. Frost cracks the granite giant. I wrote it all down in the Library.', 'Magic is just patience with a flair for drama.', 'The Arcanist at the spire and I disagree on everything. It\'s lovely.'],
   chaplain: ['The light favors those who serve. And those who wash, occasionally.', 'The royal blessing is free. My patience is not.', 'Pray for the King. He will not pray for himself.'],
   headcook: ['Out of my kitchen unless you\'re carrying flour!', 'The King likes his pie with too much pepper. Don\'t tell him I said so.', 'Feast night is Sunday. I haven\'t slept since Starday.'],
-  marshal: ['Thornsday is tourney day. Bring a strong arm and a short memory.', 'A horse knows a coward. So does a crowd.', 'Mounts? Not for commoners. Not yet, anyway.'],
+  marshal: ['Thornsday is tourney day. Bring a strong arm and a short memory.', 'A horse knows a coward. So does a crowd.', 'Eight hundred gold for a sound cob. Worth every coin on the King\'s roads.'],
   falconer: ['Shh. You\'ll spook the hawks.', 'A falcon chooses you. Never the other way round.', 'The hounds like you. That\'s rare.'],
   porter: ['Gate opens at dawn, closes never. I sleep with one eye open.', 'Welcome to Hearthvale Keep. Mind the portcullis.', 'Raiders came at the east port last night. The guard saw them off.'],
   royalguard: ['Move along, citizen.', 'For the King.', 'Quiet night. So far.', 'Eyes open, blade ready.'],
@@ -2812,7 +2820,7 @@ const UI = {
     this.tip(null);
   },
   toggle(name) { if (this.open === name) return this.close(); this[name] && this[name](); },
-  refreshOpen() { const o = this.open; if (!o) return; if (o === 'craft' && this._station) return this.craft(this._station); if (o === 'shop') return this.shop(this._shop); if (o === 'bank') return this.bank(); if (o === 'inv') return this.inv(); if (o === 'char') return this.char(); if (o === 'jobs') return this.jobs(); if (o === 'board') return this.board(); },
+  refreshOpen() { const o = this.open; if (!o) return; if (o === 'craft' && this._station) return this.craft(this._station); if (o === 'shop') return this.shop(this._shop); if (o === 'bank') return this.bank(); if (o === 'inv') return this.inv(); if (o === 'char') return this.char(); if (o === 'jobs') return this.jobs(); if (o === 'party') return this.party(); if (o === 'board') return this.board(); },
   // ----- item grid helper -----
   slotHtml(it, i, kind) {
     if (!it) return `<div class="slot empty" data-i="${i}" data-k="${kind}"></div>`;
@@ -2939,12 +2947,12 @@ const UI = {
     if (n.court) courtButtons(n, btns);
     btns.push({ label: info.giftDay === day ? 'Gift given today' : '🎀 Give a gift', disabled: info.giftDay === day, fn: () => this.giftPicker(n) });
     const elig = Party.eligible(n);
-    if (!n.court) btns.push({ label: 'Invite to party (coming later)', disabled: !Party.canRecruit(n), tt: elig ? `${n.name} would follow you. Parties arrive in a future update.` : `Needs ${CFG.RECRUIT_AFFINITY} friendship and ${CFG.RECRUIT_FAVORS} favors. Parties arrive in a future update.`, fn: () => Party.recruit(n) });
+    if (!n.crown && !n.trainer && n.job !== 'elder') { const isComp = P.companion && P.companion.npcId === n.id; btns.push({ label: isComp ? '🤝 Already your companion' : '🤝 Ask to be my companion', disabled: isComp || !elig, tt: elig ? `${n.name} would gladly travel with you.` : `Needs ${CFG.RECRUIT_AFFINITY} friendship (Close Friend). You have ${aff}.`, fn: () => recruitCompanion(n) }); }
     btns.push({ label: 'Goodbye', fn: () => UI.close() });
     const hearts = Math.floor(aff / 10);
     this.dialog(n.name, `<div><b>${esc(n.name)}</b> · ${RACES[n.race].name} ${n.court ? esc(n.title) : n.job === 'laborer' ? 'Laborer' : (JOBS[n.job] ? JOBS[n.job].name : n.job[0].toUpperCase() + n.job.slice(1))} · Level ${n.level}</div>
       <div class="dim small">Mood: ${n.mood} · ${n.court ? courtActivityText(n) : npcActivityText(n)}</div>${n.court ? courtBody(n) : ''}
-      <div class="small" data-tt="Friendship rises when you talk (once a day), do favors and give gifts. Likes: ${esc((NPC_LIKES[n.job] || []).map(id => ITEMS[id] ? ITEMS[id].name : id).join(', '))}">Friendship: <span class="heart">${'♥'.repeat(hearts)}</span><span class="dim">${'♡'.repeat(10 - hearts)}</span> ${aff}/100 · <b>${affTier(aff)}</b> · Favors done: ${info.favors}${elig ? ' · <span class="gold">Would join your party (coming later)</span>' : ''}</div>
+      <div class="small" data-tt="Friendship rises when you talk (once a day), do favors and give gifts. Likes: ${esc((NPC_LIKES[n.job] || []).map(id => ITEMS[id] ? ITEMS[id].name : id).join(', '))}">Friendship: <span class="heart">${'♥'.repeat(hearts)}</span><span class="dim">${'♡'.repeat(10 - hearts)}</span> ${aff}/100 · <b>${affTier(aff)}</b> · Favors done: ${info.favors}${elig ? ' · <span class="gold">Would travel with you as a companion</span>' : ''}</div>
       <div class="dlg-line">"${esc(line)}"</div>${qhtml}`, btns);
   },
   giftPicker(n) {
@@ -3060,7 +3068,7 @@ const UI = {
       el.querySelector('.sn').textContent = S ? S.name : ''; el.classList.toggle('locked', !S || s.locked); el.classList.toggle('ult', i === 3);
       el.querySelector('.si').textContent = S ? SKILL_ICONS[s.id] || '✦' : ''; el._tt = () => S ? `<div class="tt-name">${'QWER'[i]}: ${S.name}${S.ult ? ' <span class="gold">(Ultimate)</span>' : ''}</div><div class="tt-sub">${S.mana} mana · ${S.cd}s cooldown</div><div class="tt-desc">${S.desc}</div>${s.locked ? `<div class="tt-bad">Unlocks at ${CLASSES[P.cls].name} rank ${s.need}</div>` : ''}` : `<div class="tt-name">${'QWER'[i]}: empty</div><div class="tt-desc">Learn a class from a trainer to fill this slot.</div>`; }
     for (let i = 0; i < 4; i++) { const q = P.quick[i]; const el = $('#qk' + i); el.querySelector('.qi').textContent = q ? itemIcon(q) : ''; el.querySelector('.qi').style.color = q ? ITEMS[q].color : ''; el._tt = () => q ? itemTooltip({ id: q, qty: invCount(P.inv, q) }) + '<div class="tt-dim">Press ' + (i + 1) + ' to use. Change in Inventory (I).</div>' : 'Empty quick slot'; }
-    $('#buffs').innerHTML = P.buffs.map(b => `<span class="buff" title="${b.id}">${BUFF_NAMES[b.id] || b.id} ${Math.ceil(b.t)}s</span>`).join('') + (P.poison ? '<span class="buff bad">Poisoned</span>' : '') + (P.stealth ? '<span class="buff">Hidden</span>' : '');
+    $('#buffs').innerHTML = P.buffs.map(b => `<span class="buff" title="${b.id}">${BUFF_NAMES[b.id] || b.id} ${Math.ceil(b.t)}s</span>`).join('') + (P.poison ? '<span class="buff bad">Poisoned</span>' : '') + (P.stealth ? '<span class="buff">Hidden</span>' : '') + (P.mounted ? '<span class="buff">🐎 Mounted</span>' : '') + (G.comp ? `<span class="buff">🤝 ${esc(G.comp.name.split(' ').pop())} ${Math.round(G.comp.hp / G.comp.maxHp * 100)}%</span>` : '') + (G.pet && G.pet.ko ? `<span class="buff bad">${esc(G.pet.name)} resting</span>` : '');
   },
 };
 const BUFF_NAMES = { war_cry: '📯 War Cry', tumble: '🌀 Tumble', divine: '✨ Divine', poison_blades: '🧪 Poison Blades', mend: '💚 Mending', oil_fire: '🔥 Fire Oil', oil_frost: '❄ Frost Oil', blessed: '✝ Blessed', might: '💪 Might', mind: '🧠 Mind', fed: '🍖 Well Fed', feast: '👑 Feast-Fortified', royal_bless: '✨ Royal Blessing', arcane: '🔮 Arcane Insight' };
@@ -3105,6 +3113,9 @@ const HELP_HTML = `<table class="help">
 <tr><td>I · C · J · M</td><td>Inventory · Character · Jobs & Journal · Map</td></tr>
 <tr><td>Esc</td><td>Menu: save, load, export/import, controls</td></tr>
 <tr><td>L or Enter</td><td>Open/close the chat log (filters: loot, XP, combat, chatter)</td></tr>
+<tr><td>K</td><td>Party panel: your horse, pet and companion (gear, orders, jobs)</td></tr>
+<tr><td>H</td><td>Mount / dismount your horse (outdoors only; attacking gets you off)</td></tr>
+<tr><td>Z · X · V</td><td>Companion orders: follow · stay · attack my target</td></tr>
 <tr><td>1-9 in a pop-up</td><td>Pick that button</td></tr></table>
 <p class="small"><b>Hearthvale Keep</b> (north of town): the outer bailey is open to all. Do favors for courtiers (look for ! marks) and see the Steward at her desk to earn an Inner Bailey Pass, then an audience with the King, then Freedom of the Keep. Your progress is under <b>Royal Standing</b> in the Journal (J). Tournament every Thornsday, feast every Sunday.</p><p class="small">Start: talk to the <b>Elder</b> in the town square for rumors, then explore. Class trainers and job teachers are spread around the world. Death costs 20% of your carried gold and 10% gear durability — bank your gold and repair at the Smithy.</p><p class="small"><b>Bosses</b> (☠ on the map) each have a trick. Read signs, notes and townsfolk gossip, and hover a monster you have beaten to see what it resists. A beaten boss stays down for 3 in-game days, then returns stronger. Its trophy lets crafters make relic gear, the best gear for that level. <b>Favors:</b> townsfolk with a <b>!</b> over their head want help. Favors, gifts and daily chats raise friendship.</p>`;
 
@@ -3144,6 +3155,210 @@ UI.library = function () {
   UI.choose('Library & Chancery', `The court's books on the realm and its monsters. You have read ${R.books.length} of ${LORE_BOOKS.length}. Reading a book for the first time gives XP.`, opts, () => UI.close());
 };
 
+// ===== 09b_companions.js =====
+// ============================================================
+// v1.4 COMPANIONS: horses (mount with H), pets (falcon spots nodes, hound fights),
+// and one companion (a Close Friend) who levels, wears gear, takes orders and can work a job.
+// Saved state lives on the player: P.horses, P.activeHorse, P.pets, P.activePet, P.companion.
+// Runtime bodies (not saved): G.pet, G.comp.
+// ============================================================
+const HORSE_BREEDS = {
+  cob:      { name: 'Hearthvale Cob',    price: 800,  standing: 0,  speed: 1.45, coats: [['#8a5a30', 'Bay'], ['#5a3a20', 'Brown'], ['#c8a070', 'Dun'], ['#2a2018', 'Black']] },
+  palfrey:  { name: 'Valecrest Palfrey', price: 1600, standing: 30, speed: 1.55, coats: [['#d8d0c0', 'Grey'], ['#a0703a', 'Chestnut'], ['#e0c890', 'Palomino']] },
+  courser:  { name: 'Greyridge Courser', price: 2800, standing: 60, speed: 1.65, coats: [['#9a9a9a', 'Dapple Grey'], ['#3a3a3a', 'Raven'], ['#b06a3a', 'Sorrel']] },
+  destrier: { name: 'Royal Destrier',    price: 4500, standing: 90, speed: 1.75, coats: [['#f0ece0', 'White'], ['#1a1a1a', 'Coal']] },
+};
+const HORSE_NAMES = ['Clover', 'Bramble', 'Juniper', 'Maple', 'Thistle', 'Duke', 'Pepper', 'Willow', 'Ember', 'Storm', 'Hazel', 'Barley', 'Comet', 'Sable', 'Fennel', 'Rowan', 'Biscuit', 'Shadow', 'Aster', 'Valor'];
+const PET_DEFS = {
+  falcon: { name: 'Falcon', price: 600, names: ['Talon', 'Skye', 'Kestrel', 'Arrow', 'Zephyr', 'Wisp'], colors: ['#8a6a4a', '#5a4a3a', '#b8a080'], desc: 'Circles overhead and marks herbs and ore near you (rings on the ground and dots on the minimap).' },
+  hound:  { name: 'Hound', price: 500, names: ['Rex', 'Bran', 'Fang', 'Biscuit', 'Hob', 'Juno'], colors: ['#8a5a30', '#3a3028', '#c8b090', '#6a6a6a'], desc: 'Fights at your side. If hurt badly it limps off to rest for a minute, then comes back.' },
+};
+const COMP_JOBS = {
+  mining:      { name: 'Mining',      item: t => 'ore_' + TIERS[t].ore,  where: 'the Old Quarry' },
+  woodcutting: { name: 'Woodcutting', item: t => 'log_' + TIERS[t].wood, where: 'the Lumber Camp' },
+  herbalism:   { name: 'Herb picking', item: t => 'herb_' + TIERS[t].herb, where: 'the meadows' },
+  fishing:     { name: 'Fishing',     item: t => 'fish_' + TIERS[t].fish, where: 'Mirror Lake' },
+  farming:     { name: 'Farming',     item: t => 'crop_' + ['wheat', 'carrot', 'pumpkin', 'moonmelon'][t], where: 'the town fields' },
+};
+const COMP_ORDERS = { follow: 'Follow me', stay: 'Stay here', attack: 'Attack my target' };
+const ROAD_TILES = new Set([T.PATH, T.COBBLE, T.DOCK]);
+function initCompanionState(P) { P.horses = P.horses || []; P.pets = P.pets || []; if (P.activeHorse === undefined) P.activeHorse = null; if (P.activePet === undefined) P.activePet = null; if (P.companion === undefined) P.companion = null; P.mounted = false; }
+// ---------------- horses ----------------
+function activeHorse() { const P = G.player; return (P.horses || []).find(h => h.uid === P.activeHorse) || null; }
+function mountMult(P, m) { if (!P.mounted) return 1; const h = activeHorse(); if (!h) return 1; const onRoad = ROAD_TILES.has(m.tile(Math.floor(P.x / CFG.TILE), Math.floor(P.y / CFG.TILE))); return onRoad ? h.speed : 1 + (h.speed - 1) * 0.7; }
+function toggleMount() { const P = G.player;
+  if (P.mounted) return dismount('');
+  const h = activeHorse(); if (!h) return log(P.horses.length ? 'Pick a horse to ride in the Party panel (K).' : 'You have no horse. Marshal Hollis Brand sells them at the Royal Stables in the castle.', 'warn');
+  if (P.map !== 'world') return log('No riding indoors or in dungeons.', 'warn');
+  if (P.channel) P.channel = null; P.mounted = true; sfx('dash'); log(`You mount ${h.name}. (H to get off)`, 'dim'); UI.dirty = true; }
+function dismount(why) { const P = G.player; if (!P.mounted) return; P.mounted = false; UI.dirty = true; if (why !== undefined) chat('system', why || 'You get off your horse.', 'dim'); }
+function buyHorse(key) { const P = G.player, B = HORSE_BREEDS[key], R = royal();
+  if (R.standing < B.standing) return log(`The ${B.name} is sold only to those with Royal Standing ${B.standing}.`, 'warn');
+  if (P.gold < B.price) return log(`A ${B.name} costs ${B.price}g.`, 'warn');
+  P.gold -= B.price; const used = new Set(P.horses.map(h => h.name)); const name = pick(HORSE_NAMES.filter(n => !used.has(n))) || 'Horse ' + (P.horses.length + 1); const [color, coat] = pick(B.coats);
+  const h = { uid: uid(), breed: key, name, color, coat, speed: B.speed }; P.horses.push(h); if (!P.activeHorse) P.activeHorse = h.uid;
+  log(`You bought ${name}, a ${coat.toLowerCase()} ${B.name}! Press H to ride (outdoors only).`, 'gold'); sfx('coin'); UI.dirty = true; return h; }
+UI.horseShop = function () { const P = G.player, R = royal();
+  UI.choose('Royal Stables: horses for sale', `Marshal Hollis Brand: "A good horse is faster on roads and open ground. Not indoors, not down a mine. Rarer breeds go to those the Crown trusts." You have ${P.horses.length} horse(s) and ${fmt(P.gold)}g.`,
+    Object.entries(HORSE_BREEDS).map(([k, B]) => ({ label: `🐎 ${B.name} · ${B.price}g`, sub: R.standing < B.standing ? `Needs Royal Standing ${B.standing} (you have ${R.standing})` : `+${Math.round((B.speed - 1) * 100)}% speed on roads`, disabled: R.standing < B.standing || P.gold < B.price, fn: () => { buyHorse(k); UI.horseShop(); }, keep: true })), () => UI.close()); };
+// ---------------- pets ----------------
+function activePet() { const P = G.player; return (P.pets || []).find(p => p.uid === P.activePet) || null; }
+function buyPet(kind) { const P = G.player, D = PET_DEFS[kind]; if (P.gold < D.price) return log(`A ${D.name.toLowerCase()} costs ${D.price}g.`, 'warn');
+  P.gold -= D.price; const used = new Set(P.pets.map(p => p.name)); const p = { uid: uid(), kind, name: pick(D.names.filter(n => !used.has(n))) || D.name, color: pick(D.colors) }; P.pets.push(p); P.activePet = p.uid; G.pet = null;
+  log(`${p.name} the ${D.name.toLowerCase()} joins you! ${D.desc}`, 'gold'); sfx('coin'); UI.dirty = true; return p; }
+function makePetBody(p) { const P = G.player, hp = 60 + P.level * 18; return { pet: p, kind: p.kind, name: p.name, x: P.x - 30, y: P.y + 10, map: P.map, hp, maxHp: hp, ko: false, hidden: false, koT: 0, atkCd: 0, facing: 0, level: P.level, onHurt: petHurt }; }
+function petHurt(dmg) { const b = G.pet; if (!b || b.ko) return; const a = Math.max(1, Math.round(dmg * randf(0.85, 1.15) * 0.8)); b.hp -= a; b.hitFlash = 0.12; addText(b.x, b.y - 24, '-' + a, '#ff8080', 11);
+  if (b.hp <= 0) { b.ko = true; b.hidden = true; b.koT = CFG.PET_REST_SEC; log(`${b.name} is hurt and limps off to rest. Back in about a minute.`, 'warn'); } }
+function updatePet(dt) {
+  const P = G.player, p = activePet(); if (!p || P.map === 'lists') { G.pet = null; G.falconMarks = []; return; }
+  if (!G.pet || G.pet.pet !== p) G.pet = makePetBody(p);
+  const b = G.pet, m = curMap();
+  if (b.hitFlash > 0) b.hitFlash -= dt;
+  if (b.ko) { b.koT -= dt; if (b.koT <= 0) { b.ko = false; b.hidden = false; b.hp = b.maxHp; b.map = P.map; b.x = P.x - 30; b.y = P.y + 10; log(`${b.name} is back, tail wagging.`, 'dim'); } return; }
+  if (b.map !== P.map || dist(b.x, b.y, P.x, P.y) > 16 * CFG.TILE) { b.map = P.map; b.x = P.x - 30; b.y = P.y + 10; }
+  b.maxHp = 60 + P.level * 18; if (b.hp < b.maxHp) b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.02 * dt);
+  const spd = Math.max(160, P.speed * mountMult(P, m)) * 1.05;
+  if (b.kind === 'falcon') { // flies: no walls, circles over the player
+    b.t = (b.t || 0) + dt; const tx = P.x + Math.cos(b.t * 1.3) * 46, ty = P.y - 40 + Math.sin(b.t * 1.3) * 22; const d = dist(b.x, b.y, tx, ty);
+    if (d > 2) { const s = Math.min(d, spd * 1.4 * dt); b.facing = Math.atan2(ty - b.y, tx - b.x); b.x += Math.cos(b.facing) * s; b.y += Math.sin(b.facing) * s; }
+    b.scanT = (b.scanT || 0) - dt; if (b.scanT <= 0) { b.scanT = 1.5; falconScan(m); } return; }
+  G.falconMarks = [];
+  // hound: pick a fight with what threatens you, else heel
+  let foe = null;
+  if (P.attackTarget && !P.attackTarget.dead && dist(P.attackTarget.x, P.attackTarget.y, b.x, b.y) < 9 * CFG.TILE) foe = P.attackTarget;
+  if (!foe) { let fd = 6 * CFG.TILE; for (const mo of m.monsters) { if (mo.dead || mo.def.passive) continue; const threat = mo.state === 'chase' && (mo.target === 'player' || mo.target === b || mo.target === G.comp); const d = dist(mo.x, mo.y, P.x, P.y); if (threat && d < fd) { fd = d; foe = mo; } } }
+  if (foe) { const d = dist(b.x, b.y, foe.x, foe.y); b.moving = true;
+    if (d > foe.size + 16) steer(m, b, foe.x, foe.y, spd * 1.1, dt, 7);
+    else { b.atkCd -= dt; b.facing = Math.atan2(foe.y - b.y, foe.x - b.x); b.moving = false; if (b.atkCd <= 0) { b.atkCd = 0.9; b.atkAnim = 0.2; hitMonster(foe, (5 + P.level * 2.6) * randf(0.85, 1.15), 'physical', { small: true }); if (!foe.dead && (foe.target !== 'player' || chance(0.25))) { foe.state = 'chase'; foe.target = b; } } }
+    return; }
+  const hx = P.x - Math.cos(P.facing || 0) * 36, hy = P.y - Math.sin(P.facing || 0) * 36 + 8;
+  if (dist(b.x, b.y, hx, hy) > 24) { steer(m, b, hx, hy, spd, dt, 7); b.moving = true; } else b.moving = false;
+}
+function falconScan(m) { const P = G.player, tx = P.x / CFG.TILE, ty = P.y / CFG.TILE, out = [];
+  for (const o of m.objects) { if (o.type !== 'node' || (o.kind !== 'herb' && o.kind !== 'ore') || o.charges <= 0) continue; if (o.night && !isNight()) continue; const d = dist(o.x, o.y, tx, ty); if (d < CFG.FALCON_RANGE) out.push([d, o]); }
+  out.sort((a, b) => a[0] - b[0]); const marks = out.slice(0, 14).map(x => x[1]);
+  const fresh = marks.filter(o => !(G.falconMarks || []).includes(o)); G.falconMarks = marks;
+  if (fresh.length && (!G.falconSaidT || performance.now() - G.falconSaidT > 25000)) { G.falconSaidT = performance.now(); const p = activePet(); chat('loot', `${esc(p.name)} spots ${fresh.length} ${fresh.length > 1 ? 'nodes' : 'node'} nearby: ${esc([...new Set(fresh.map(o => o.name))].slice(0, 3).join(', '))}.`, 'dim'); } }
+// ---------------- the companion ----------------
+function compNpc() { const c = G.player.companion; return c ? allNpcs().find(n => n.id === c.npcId) : null; }
+function compCanRecruit(n) { const P = G.player; return !!(n && !n.trainer && !n.crown && n.job !== 'elder' && (P.affinity[n.id] || 0) >= CFG.RECRUIT_AFFINITY && !(P.companion && P.companion.npcId === n.id)); }
+function compStats(c) { const st = {}; let def = 0; for (const sl of SLOTS) { const it = c.equip[sl]; if (!it) continue; if (it.def) def += it.def; for (const [k, v] of Object.entries(it.stats || {})) st[k] = (st[k] || 0) + v; }
+  const w = c.equip.weapon, b = w ? EQUIP_BASES[w.base] : null; const main = Math.max(st.str || 0, st.dex || 0, st.int || 0);
+  return { maxHp: Math.round(70 + c.level * 20 + (st.vit || 0) * 9 + (st.hp || 0)), armor: Math.round(def + c.level * 1.5 + (st.vit || 0) * 0.5), dmg: w ? w.dmg : [3 + c.level, 5 + Math.round(c.level * 1.6)], power: 1 + c.level * 0.03 + main * 0.02,
+    speed: w ? w.speed : 1.2, type: w ? w.dtype : 'physical', range: b ? (b.melee ? b.range : Math.min(b.range, 240)) : 44, melee: b ? b.melee : true, crit: 0.05 + (st.crit || 0) }; }
+function recruitCompanion(n) { const P = G.player;
+  const doIt = () => { if (P.companion) dismissCompanion(true);
+    P.companion = { npcId: n.id, name: n.name, race: n.race, color: n.color, hair: n.hair, title: n.court ? n.title : (JOBS[n.job] ? JOBS[n.job].name : n.job), level: Math.max(1, P.level - 2), xp: 0, equip: {}, order: 'follow', downUntil: 0, work: null };
+    n.withPlayer = true; n.hidden = true; G.comp = null; log(`${n.name} joins you as your companion! Open the Party panel (K) to give them gear, orders or a job.`, 'gold'); sfx('level'); UI.dirty = true; };
+  if (P.companion) return UI.choose('Change companion?', `${esc(P.companion.name)} will go home (with the gear you gave them back in your bag).`, [{ label: `Invite ${esc(n.name)}`, fn: doIt }], () => UI.npc(n));
+  doIt(); }
+function dismissCompanion(quiet) { const P = G.player, c = P.companion; if (!c) return;
+  for (const sl of SLOTS) if (c.equip[sl]) { if (!invAddEquip(P.inv, c.equip[sl])) { P.bank.items[P.bank.items.indexOf(null)] = c.equip[sl]; log(`Your bag was full, so ${c.equip[sl].name} went to your bank.`, 'warn'); } }
+  if (c.work) collectWork(true);
+  const n = compNpc(); if (n) { n.withPlayer = false; n.hidden = false; if (n.court) { if (!n.guard) courtSnap(n); } else if (n.home) { n.x = (n.home.outX + 0.5) * CFG.TILE; n.y = (n.home.outY + 0.5) * CFG.TILE; n.act = null; n.path = null; } }
+  if (!quiet) log(`${c.name} heads home. You can invite them again any time.`, 'dim'); P.companion = null; G.comp = null; UI.dirty = true; }
+function compAvailable() { const c = G.player.companion; return !!(c && !c.work && G.time >= (c.downUntil || 0)); }
+function makeCompBody(c) { const P = G.player, s = compStats(c); return { comp: c, name: c.name, race: c.race, color: c.color, hair: c.hair, x: P.x + 30, y: P.y + 12, map: P.map, hp: s.maxHp, maxHp: s.maxHp, atkCd: 0, facing: 0, level: c.level, stayAt: null, onHurt: compHurt }; }
+function compHurt(dmg, src) { const b = G.comp; if (!b || b.hidden) return; const s = compStats(b.comp); const lv = src && src.level ? src.level : b.level;
+  const a = Math.max(1, Math.round(dmg * randf(0.85, 1.15) * (1 - s.armor / (s.armor + 40 + lv * 12)))); b.hp -= a; b.hitFlash = 0.12; addText(b.x, b.y - 30, '-' + a, '#ff8080', 11);
+  if (b.hp <= 0) compDowned(); }
+function compDowned() { const P = G.player, c = P.companion; const day = hour() < 7 ? gameDay() : gameDay() + 1; c.downUntil = day * CFG.DAY_LENGTH_SEC + 7 / 24 * CFG.DAY_LENGTH_SEC;
+  log(`${c.name} is badly hurt and heads home to recover. They will be back at 7:00 tomorrow morning.`, 'bad'); G.comp = null; c.order = 'follow'; UI.dirty = true; }
+function compGainXp(n) { const c = G.player.companion; if (!c || !compAvailable()) return; if (c.level >= G.player.level + 1) { c.xp = 0; return; } c.xp += n;
+  while (c.xp >= xpToNext(c.level) && c.level < G.player.level + 1) { c.xp -= xpToNext(c.level); c.level++; log(`${c.name} is now level ${c.level}!`, 'gold'); if (G.comp) { const s = compStats(c); G.comp.maxHp = s.maxHp; G.comp.hp = s.maxHp; G.comp.level = c.level; } } }
+const _gainXpBase = gainXp;
+gainXp = function (P, n) { _gainXpBase(P, n); if (P === G.player && n > 0) compGainXp(Math.round(n * 0.9)); };
+function setOrder(o) { const P = G.player, c = P.companion; if (!c) return log('You have no companion yet. Become Close Friends with someone, then invite them.', 'warn'); if (!compAvailable()) return log(`${c.name} isn't with you right now.`, 'warn');
+  c.order = o; const b = G.comp; if (b) { b.stayAt = o === 'stay' ? [b.x, b.y] : null; b.focus = o === 'attack' ? (P.attackTarget && !P.attackTarget.dead ? P.attackTarget : (G.hover && G.hover.kind === 'monster' ? G.hover.ref : null)) : null;
+    npcSay(b, { follow: 'Right behind you.', stay: 'I\'ll hold here.', attack: b.focus ? 'On it!' : 'Attack what? Pick a target first.' }[o]); if (o === 'attack' && !b.focus) c.order = 'follow'; }
+  UI.dirty = true; if (UI.open === 'party') UI.party(); }
+function updateComp(dt) {
+  const P = G.player, c = P.companion; if (!c || !compAvailable() || P.map === 'lists') { G.comp = null; return; }
+  if (!G.comp || G.comp.comp !== c) G.comp = makeCompBody(c);
+  const b = G.comp, m = curMap(), s = compStats(c); b.maxHp = s.maxHp; b.level = c.level;
+  if (b.hitFlash > 0) b.hitFlash -= dt; if (b.atkAnim > 0) b.atkAnim -= dt;
+  if (b.bubble) { b.bubble.t -= dt; if (b.bubble.t <= 0) b.bubble = null; }
+  if (b.map !== P.map || (c.order !== 'stay' && dist(b.x, b.y, P.x, P.y) > 18 * CFG.TILE)) { b.map = P.map; b.x = P.x + 30; b.y = P.y + 12; b.stayAt = null; if (c.order === 'stay') c.order = 'follow'; b.path = null; }
+  b.combatT = Math.max(0, (b.combatT || 0) - dt); if (b.hp < b.maxHp) b.hp = Math.min(b.maxHp, b.hp + b.maxHp * (b.combatT > 0 ? 0.004 : 0.03) * dt);
+  const spd = Math.max(150, P.speed * mountMult(P, m)) * 1.05, home = b.stayAt;
+  // pick a target
+  let foe = null;
+  if (c.order === 'attack') { foe = b.focus && !b.focus.dead && m.monsters.includes(b.focus) ? b.focus : null; if (!foe) { c.order = 'follow'; b.focus = null; } }
+  if (!foe) { const R0 = c.order === 'stay' ? 4 * CFG.TILE : 7 * CFG.TILE, cx = home ? home[0] : P.x, cy = home ? home[1] : P.y; let fd = R0;
+    if (c.order === 'follow' && P.attackTarget && !P.attackTarget.dead && dist(P.attackTarget.x, P.attackTarget.y, P.x, P.y) < R0) foe = P.attackTarget;
+    else for (const mo of m.monsters) { if (mo.dead || mo.def.passive) continue; const threat = mo.state === 'chase' && (mo.target === 'player' || mo.target === b || mo.target === G.pet); const d = dist(mo.x, mo.y, cx, cy); if ((threat || d < 2.5 * CFG.TILE && mo.state === 'chase') && d < fd) { fd = d; foe = mo; } } }
+  if (foe) { const d = dist(b.x, b.y, foe.x, foe.y), reach = s.melee ? s.range + foe.size * 0.6 : s.range; b.combatT = 4;
+    if (d > reach) { if (c.order === 'stay' && home && dist(foe.x, foe.y, home[0], home[1]) > 4 * CFG.TILE) foe = null; else { steer(m, b, foe.x, foe.y, spd, dt, 9); b.moving = true; } }
+    if (foe && d <= reach) { b.moving = false; b.facing = Math.atan2(foe.y - b.y, foe.x - b.x); b.atkCd -= dt;
+      if (b.atkCd <= 0) { b.atkCd = 1 / Math.max(0.5, s.speed); b.atkAnim = 0.18; const crit = chance(s.crit); hitMonster(foe, randf(s.dmg[0], s.dmg[1]) * s.power * (crit ? 1.6 : 1), s.type, { small: !crit, crit });
+        if (!s.melee) addEffect({ kind: 'boom', x: foe.x, y: foe.y, r: 10, t: 0.18, color: DMG_COLORS[s.type] || '#fff' });
+        if (!foe.dead && foe.target !== b && (foe.target !== 'player' || chance(0.3))) { foe.state = 'chase'; foe.target = b; } } }
+    if (foe) { courtChatterComp(b, dt); return; } }
+  // no fight: follow or hold
+  const tx = home ? home[0] : P.x + Math.cos((P.facing || 0) + 2.4) * 40, ty = home ? home[1] : P.y + Math.sin((P.facing || 0) + 2.4) * 40;
+  if (dist(b.x, b.y, tx, ty) > (home ? 6 : 30)) { steer(m, b, tx, ty, spd, dt, 9); b.moving = true; b.facing = Math.atan2(ty - b.y, tx - b.x); } else b.moving = false;
+  courtChatterComp(b, dt);
+}
+const COMP_LINES = ['Good to be on the road with you.', 'I\'ve got your back.', 'Remember when we were just strangers? Ha.', 'Watch your footing.', 'Hungry yet? I am.', 'That one looked at me funny.', 'Lead on.'];
+function courtChatterComp(b, dt) { b.chatT = (b.chatT === undefined ? 30 : b.chatT) - dt; if (b.chatT <= 0) { b.chatT = randf(45, 90); if (b.combatT > 0) npcSay(b, pick(['Take that!', 'Behind you!', 'Is that all?'])); else npcSay(b, pick(COMP_LINES)); } }
+// ---------------- companion jobs (while you're off adventuring) ----------------
+function workTier(c) { return clamp(Math.floor((c.level - 1) / 9), 0, 3); }
+function workYield(c) { const w = c.work; if (!w) return { id: null, qty: 0, hours: 0 };
+  const hours = Math.min(CFG.COMP_WORK_MAX_HOURS, (G.time - w.since) / (CFG.DAY_LENGTH_SEC / 24)); const per = 1 + Math.floor(c.level / 10) + (c.level >= 5 ? 0.5 : 0);
+  return { id: COMP_JOBS[w.kind].item(workTier(c)), qty: Math.floor(hours * per), hours }; }
+function sendToWork(kind) { const P = G.player, c = P.companion; if (!c || !compAvailable()) return; c.work = { kind, since: G.time }; G.comp = null;
+  log(`${c.name} heads off to ${COMP_JOBS[kind].where} for some ${COMP_JOBS[kind].name.toLowerCase()}. Come back to the Party panel (K) to collect.`, 'job'); UI.dirty = true; if (UI.open === 'party') UI.party(); }
+function collectWork(recall) { const P = G.player, c = P.companion; if (!c || !c.work) return 0; const y = workYield(c); let got = 0;
+  if (y.qty > 0) { const left = invAdd(P.inv, y.id, y.qty); got = y.qty - left; if (left) { P.bank.items = P.bank.items || []; const i = P.bank.items.findIndex(s => s && s.id === y.id); if (i >= 0) P.bank.items[i].qty += left; else { const j = P.bank.items.indexOf(null); if (j >= 0) P.bank.items[j] = { id: y.id, qty: left }; } log(`Your bag was full, so ${left} went to your bank.`, 'warn'); }
+    const xp = Math.round(y.hours * (6 + c.level * 2)); c.xp += xp; while (c.xp >= xpToNext(c.level) && c.level < P.level + 1) { c.xp -= xpToNext(c.level); c.level++; log(`${c.name} is now level ${c.level}!`, 'gold'); } }
+  log(`${c.name} brings back ${y.qty}× ${y.id ? ITEMS[y.id].name : 'nothing'}${recall ? ' and rejoins you' : ''}.`, 'gold'); if (y.qty) sfx('coin');
+  if (recall) { c.work = null; G.comp = null; } else c.work.since = G.time; UI.dirty = true; return y.qty; }
+// ---------------- the Party panel (K) ----------------
+UI.party = function () {
+  const P = G.player, c = P.companion, R = royal(); let h = '';
+  // horse
+  const ah = activeHorse();
+  h += `<h3>🐎 Horse</h3>${P.horses.length ? `<div class="small">Riding: <b>${ah ? esc(ah.name) + '</b> (' + esc(ah.coat) + ' ' + HORSE_BREEDS[ah.breed].name + ', +' + Math.round((ah.speed - 1) * 100) + '% on roads)' : 'none</b>'} · ${P.mounted ? '<span class="gold">mounted</span>' : 'on foot'} · press <b>H</b> to mount/dismount. Not indoors or in dungeons; attacking gets you off.</div>
+    <div class="row">${P.horses.map(x => `<button data-horse="${x.uid}" ${x.uid === P.activeHorse ? 'class="on" disabled' : ''}><span style="color:${x.color}">■</span> ${esc(x.name)}</button>`).join(' ')}</div>` : '<div class="small dim">No horse yet. Marshal Hollis Brand sells them at the Royal Stables (castle outer bailey) from 800g. Rarer breeds unlock with Royal Standing.</div>'}`;
+  // pet
+  const ap = activePet();
+  h += `<h3>🦅 Pet</h3>${P.pets.length ? `<div class="small">Out with you: <b>${ap ? esc(ap.name) + '</b> the ' + PET_DEFS[ap.kind].name.toLowerCase() + ' · ' + PET_DEFS[ap.kind].desc : 'none</b>'}${G.pet && G.pet.ko ? ` <span class="bad">(resting, back in ${Math.ceil(G.pet.koT)}s)</span>` : ''}</div>
+    <div class="row">${P.pets.map(x => `<button data-pet="${x.uid}" ${x.uid === P.activePet ? 'class="on" disabled' : ''}>${x.kind === 'falcon' ? '🦅' : '🐕'} ${esc(x.name)}</button>`).join(' ')} ${ap ? '<button data-pet="none">Leave pet at home</button>' : ''}</div>` : '<div class="small dim">No pet yet. Wren Ashby (Falconer, near the Mews in the castle) trains falcons; the Mews & Kennels sell hounds.</div>'}`;
+  // companion
+  h += '<h3>🤝 Companion</h3>';
+  if (!c) h += `<div class="small dim">Nobody yet. Become a <b>Close Friend</b> (60 friendship) with any townsperson or courtier (not the King or Queen), then click them and choose "Ask to be my companion". Talk daily, do favors and give gifts they love.</div>`;
+  else { const s = compStats(c), b = G.comp, away = c.work ? 'work' : G.time < (c.downUntil || 0) ? 'down' : null;
+    h += `<div><b>${esc(c.name)}</b> · ${RACES[c.race].name} ${esc(c.title || '')} · Level ${c.level} <span class="small dim">(${fmt(Math.floor(c.xp))}/${fmt(xpToNext(c.level))} XP, levels with you)</span></div>
+      <div class="small">Life ${b ? Math.ceil(b.hp) + '/' : ''}${s.maxHp} · Damage ${Math.round(s.dmg[0] * s.power)}-${Math.round(s.dmg[1] * s.power)} ${s.type} · Armor ${s.armor}${away === 'down' ? ` · <span class="bad">recovering at home until 7:00</span>` : ''}${away === 'work' ? ` · <span class="gold">away ${COMP_JOBS[c.work.kind].name.toLowerCase()}</span>` : ''}</div>`;
+    if (!away) h += `<div class="small">Orders (keys): <b>Z</b> follow · <b>X</b> stay · <b>V</b> attack my target. Now: <b>${COMP_ORDERS[c.order]}</b></div><div class="row">${Object.entries(COMP_ORDERS).map(([k, v]) => `<button data-order="${k}" ${c.order === k ? 'class="on"' : ''}>${v}</button>`).join(' ')}</div>`;
+    if (c.work) { const y = workYield(c); h += `<div class="quest">${esc(c.name)} is ${COMP_JOBS[c.work.kind].name.toLowerCase()} at ${COMP_JOBS[c.work.kind].where}: <b>${y.qty}× ${esc(ITEMS[y.id].name)}</b> so far (${y.hours.toFixed(1)} of ${CFG.COMP_WORK_MAX_HOURS} hours; they stop when their pack is full).</div><div class="row"><button data-collect="1">Collect</button> <button data-recall="1">Collect and call back</button></div>`; }
+    else if (!away) h += `<div class="small">Send to work while you adventure (gathers about ${(1 + Math.floor(c.level / 10) + (c.level >= 5 ? 0.5 : 0))} per in-game hour, tier ${workTier(c) + 1} materials):</div><div class="row">${Object.entries(COMP_JOBS).map(([k, J]) => `<button data-work="${k}">${J.name}</button>`).join(' ')}</div>`;
+    h += `<div class="small" style="margin-top:6px"><b>Gear</b> (click a worn piece to take it back; click an item from your bag to give it):</div><div class="row">${SLOTS.map(sl => { const it = c.equip[sl]; return `<button class="cgear" data-cslot="${sl}" data-tt="1" ${it ? '' : 'disabled'}><span class="dim small">${sl}</span> ${it ? `<span style="color:${itemColor(it)}">${esc(it.name)}</span>` : '—'}</button>`; }).join(' ')}</div>`;
+    const bag = P.inv.map((it, i) => [it, i]).filter(([it]) => it && it.kind === 'equip');
+    h += `<div class="row">${bag.length ? bag.map(([it, i]) => `<button data-give="${i}" data-tt="1" ${it.req > c.level ? 'disabled' : ''}><span style="color:${itemColor(it)}">${esc(it.name)}</span>${it.req > c.level ? ` <span class="bad small">needs Lv ${it.req}</span>` : ''}</button>`).join(' ') : '<span class="small dim">No gear in your bag.</span>'}</div>`;
+    h += `<div class="row" style="margin-top:6px"><button data-dismiss="1">Send ${esc(c.name)} home</button></div>`; }
+  this.show('party', 'Party: horse, pet and companion (K)', h, true); G.paused = true;
+  const pnl = $('#panel');
+  pnl.querySelectorAll('[data-horse]').forEach(el => el.onclick = () => { P.activeHorse = el.dataset.horse; if (P.mounted) dismount(); UI.party(); });
+  pnl.querySelectorAll('[data-pet]').forEach(el => el.onclick = () => { P.activePet = el.dataset.pet === 'none' ? null : el.dataset.pet; G.pet = null; UI.party(); });
+  pnl.querySelectorAll('[data-order]').forEach(el => el.onclick = () => setOrder(el.dataset.order));
+  pnl.querySelectorAll('[data-work]').forEach(el => el.onclick = () => sendToWork(el.dataset.work));
+  pnl.querySelectorAll('[data-collect]').forEach(el => el.onclick = () => { collectWork(false); UI.party(); });
+  pnl.querySelectorAll('[data-recall]').forEach(el => el.onclick = () => { collectWork(true); UI.party(); });
+  pnl.querySelectorAll('[data-dismiss]').forEach(el => el.onclick = () => UI.choose('Send home?', `${esc(c.name)} goes home and gives back any gear you lent them.`, [{ label: 'Send home', fn: () => { dismissCompanion(); UI.party(); } }], () => UI.party()));
+  pnl.querySelectorAll('[data-cslot]').forEach(el => { const it = c && c.equip[el.dataset.cslot]; if (it) el._tt = () => itemTooltip(it); el.onclick = () => compUnequip(el.dataset.cslot); });
+  pnl.querySelectorAll('[data-give]').forEach(el => { const it = P.inv[+el.dataset.give]; el._tt = () => itemTooltip(it, c && c.equip[it.slot]); el.onclick = () => compEquip(+el.dataset.give); });
+};
+function compEquip(i) { const P = G.player, c = P.companion, it = P.inv[i]; if (!c || !it || it.kind !== 'equip') return; if (it.req > c.level) return log(`${c.name} needs level ${it.req} for that.`, 'warn');
+  const old = c.equip[it.slot]; c.equip[it.slot] = it; P.inv[i] = old || null; if (G.comp) { const s = compStats(c); G.comp.maxHp = s.maxHp; } log(`${c.name} puts on ${it.name}.`, 'dim'); sfx('equip'); UI.party(); }
+function compUnequip(sl) { const P = G.player, c = P.companion; const it = c && c.equip[sl]; if (!it) return; if (!invAddEquip(P.inv, it)) return log('Your bag is full.', 'warn'); delete c.equip[sl]; sfx('equip'); UI.party(); }
+// ---------------- glue ----------------
+const _castSkillBase = castSkill;
+castSkill = function (P, i, ax, ay) { if (P.mounted) dismount('You hop off your horse to fight.'); return _castSkillBase(P, i, ax, ay); };
+function updateCompanions(dt) { const P = G.player; if (P.mounted && (P.map !== 'world' || G.dead)) dismount(P.map !== 'world' ? 'You leave your horse outside.' : ''); updatePet(dt); updateComp(dt); }
+Party.eligible = n => compCanRecruit(n); Party.canRecruit = n => compCanRecruit(n);
+function applyCompanionFlags() { const c = G.player && G.player.companion; for (const n of allNpcs()) n.withPlayer = !!(c && c.npcId === n.id); for (const n of allNpcs()) if (n.withPlayer) n.hidden = true; G.pet = null; G.comp = null; G.falconMarks = []; }
+
 // ===== 10_save.js =====
 // ---------- save / load (localStorage, 3 slots, export/import) ----------
 const SAVE_KEY = s => 'hearthvale_slot_' + s;
@@ -3176,6 +3391,7 @@ function migrateSave(d) {
     d.migratedFrom = v;
   }
   if (older(v, '1.3.0')) { d.migratedFrom13 = v; }
+  if (older(v, '1.4.0')) { d.migratedFrom14 = v; p.horses = p.horses || []; p.pets = p.pets || []; p.companion = p.companion || null; p.mounted = false; }
   d.v = CFG.VERSION; return d;
 }
 function applySave(d, slot) {
@@ -3190,6 +3406,7 @@ function applySave(d, slot) {
   for (const s of d.plots || []) { const pl = G.maps.world.plots[s.idx]; if (pl && s.crop) { pl.crop = s.crop; pl.plantedAt = G.time - s.age; pl.growDur = s.growDur; } }
   G.tasks = d.tasks || []; G.taskDay = d.taskDay; G.buyback = d.buyback || []; G.slot = slot;
   beginPlay(); log(`Welcome back, ${P.name}.`, 'gold'); if (d.migratedFrom) log(`Save updated from v${d.migratedFrom} to v${CFG.VERSION}. New: the Blightmarsh, Emberdeep Mine, world bosses, rare monsters, and townsfolk favors.`, 'gold');
+  if (d.migratedFrom14) log(`New in v${CFG.VERSION}: horses (Royal Stables), pets (falcons from Wren Ashby, hounds from the Kennels) and a companion: invite any Close Friend. Press K for the Party panel.`, 'gold');
   if (d.migratedFrom13) log(`New in v${CFG.VERSION}: Hearthvale Keep, the royal castle just north of town. Walk up the north street to the gatehouse. The Steward explains how to earn your way in.${d.movedOut ? ' (You were standing where the castle now stands, so you woke up in the town square.)' : ''}`, 'gold');
 }
 function loadGame(slot) { const s = localStorage.getItem(SAVE_KEY(slot)); if (!s) return; try { applySave(JSON.parse(s), slot); UI.close(); } catch (e) { alert('Could not load save: ' + e.message); console.error(e); } }
@@ -3216,6 +3433,7 @@ function beginPlay() {
   // simulate the town for a bit so townsfolk are already going about their day
   for (let k = 0; k < 40; k++) for (const n of G.npcs) updateNpc(n, G.maps.world, 0.5);
   for (const n of G.court) if (!n.guard) courtSnap(n);
+  initCompanionState(G.player); applyCompanionFlags();
   Chat.lines = []; Chat.load(); chat('system', 'Welcome to Hearthvale. Press L or Enter to open/close this chat log.', 'dim'); Chat.render();
 }
 function newGame(name, race, color, slot) {
@@ -3249,6 +3467,7 @@ function entityUnderMouse() {
   if (best) return best;
   for (const n of (m.id === 'world' ? G.npcs.concat(G.trainers) : []).concat((G.court || []).filter(c => c.map === m.id))) { if (n.hidden) continue; const d = dist(n.x, n.y - 6, wx, wy); if (d < 18 && d < bd) { bd = d; best = { kind: 'npc', ref: n }; } }
   if (best) return best;
+  if (G.comp && G.comp.map === m.id && dist(G.comp.x, G.comp.y - 6, wx, wy) < 18) return { kind: 'comp', ref: G.comp };
   const tx = Math.floor(wx / CFG.TILE), ty = Math.floor(wy / CFG.TILE); const o = m.objAt(tx, ty);
   if (o && o.type !== 'lamp' && !o.decor && !(o.type === 'decor' && !INTERIOR_ACTIONS[o.kind])) return { kind: 'obj', ref: o };
   return null;
@@ -3257,7 +3476,7 @@ function onMouseDown(e) {
   if (!G.started || G.paused || G.dead) return; if (e.button !== 0) return;
   G.mouse.down = true; G.mouse.downT = 0; const P = G.player;
   const t = entityUnderMouse(); P.channel = null;
-  if (t && t.kind === 'monster') { P.attackTarget = t.ref; P.interact = null; P.path = null; P.holdMove = false; return; }
+  if (t && t.kind === 'monster') { if (P.mounted) dismount('You hop off your horse to fight.'); P.attackTarget = t.ref; P.interact = null; P.path = null; P.holdMove = false; return; }
   P.attackTarget = null;
   if (t) { P.interact = t; P.holdMove = false; const tx = t.kind === 'obj' ? t.ref.x : Math.floor(t.ref.x / CFG.TILE), ty = t.kind === 'obj' ? t.ref.y : Math.floor(t.ref.y / CFG.TILE); P.path = findPath(curMap(), Math.floor(P.x / CFG.TILE), Math.floor(P.y / CFG.TILE), tx, ty, 6000); return; }
   P.interact = null; P.holdMove = true; clickMove();
@@ -3272,8 +3491,9 @@ function onKey(e) {
   if (UI._choices && /^[1-9]$/.test(k)) { UI.pickChoice(+k - 1); e.preventDefault(); return; }
   if (k === 'l' || k === 'enter') { UI.toggleChat(); e.preventDefault(); return; }
   if (G.dead) return;
-  if (k === 'i') return UI.toggle('inv'); if (k === 'c') return UI.toggle('char'); if (k === 'j') return UI.toggle('jobs'); if (k === 'm') return UI.toggle('map');
+  if (k === 'k') return UI.toggle('party'); if (k === 'i') return UI.toggle('inv'); if (k === 'c') return UI.toggle('char'); if (k === 'j') return UI.toggle('jobs'); if (k === 'm') return UI.toggle('map');
   if (G.paused) return;
+  if (k === 'h') { toggleMount(); return; } const oi = 'zxv'.indexOf(k); if (oi >= 0 && k.length === 1) { setOrder(['follow', 'stay', 'attack'][oi]); return; }
   const qi = 'qwer'.indexOf(k); if (qi >= 0 && k.length === 1) { castSkill(G.player, qi, G.mouse.wx, G.mouse.wy); e.preventDefault(); return; }
   const ni = '1234'.indexOf(k); if (ni >= 0 && k.length === 1) { const id = G.player.quick[ni]; if (id) useConsumable(G.player, id); return; }
 }
@@ -3282,6 +3502,7 @@ function interactRange(t) { if (t.kind === 'obj') { const o = t.ref; const cx = 
 function doInteract(t) {
   const P = G.player; P.path = null; P.interact = null;
   if (t.kind === 'drop') return pickupDrop(t.ref, true);
+  if (t.kind === 'comp') return UI.party();
   if (t.kind === 'npc') { t.ref.facing = Math.atan2(P.y - t.ref.y, P.x - t.ref.x); return UI.npc(t.ref); }
   const o = t.ref;
   switch (o.type) {
@@ -3330,7 +3551,7 @@ function update(dt) {
   for (const mo of m.monsters) if (m.id !== 'world' || dist(mo.x, mo.y, P.x, P.y) < 60 * CFG.TILE || mo.raid) updateMonster(m, mo, dt);
   if (m.id !== 'world') m.monsters = m.monsters.filter(mo => !(mo.dead && mo.deathT > 1));
   updateProjectiles(m, dt); updateEffects(m, dt);
-  const w = G.maps.world; for (const n of G.npcs) updateNpc(n, w, dt); for (const n of G.trainers) updateNpc(n, w, dt); for (const n of G.court) updateCourt(n, dt); updateTourney(dt); courtAnnouncements();
+  const w = G.maps.world; for (const n of G.npcs) updateNpc(n, w, dt); for (const n of G.trainers) updateNpc(n, w, dt); for (const n of G.court) updateCourt(n, dt); updateCompanions(dt); updateTourney(dt); courtAnnouncements();
   if (m !== w) { w.monsters = w.monsters.filter(mo => !mo.raid); }
   updateNodes(w, dt);
   for (const mo of m.monsters) { if (mo.bubble) { mo.bubble.t -= dt; if (mo.bubble.t <= 0) mo.bubble = null; } if (mo.atkAnim > 0) mo.atkAnim -= dt; }
@@ -3355,11 +3576,11 @@ function updatePlayerMove(dt) {
   if (P.channel) { P.channel.t += dt; if (P.channel.t >= P.channel.dur) { const c = P.channel; if (c.kind === 'gather') finishGather(c); else finishCraft(c); } return; }
   // held mouse: keep walking toward cursor
   if (G.mouse.down) { G.mouse.downT += dt; if (P.holdMove && G.mouse.downT > 0.18) { P.path = null; P.moveGoal = [G.mouse.wx, G.mouse.wy]; } if (P.attackTarget && P.attackTarget.dead) { const t = entityUnderMouse(); if (t && t.kind === 'monster') P.attackTarget = t.ref; } }
-  let spd = P.speed; const tl = TILE_DEF[m.tile(Math.floor(P.x / CFG.TILE), Math.floor(P.y / CFG.TILE))]; if (tl.slow) spd *= tl.slow;
+  let spd = P.speed * mountMult(P, m); const tl = TILE_DEF[m.tile(Math.floor(P.x / CFG.TILE), Math.floor(P.y / CFG.TILE))]; if (tl.slow) spd *= tl.slow;
   if (P.chill > 0) spd *= 0.6; if (P.rootT > 0) spd = 0.01;
   P.atkCd = (P.atkCd || 0) - dt; P.moving = false;
   if (P.attackTarget) {
-    const mo = P.attackTarget; if (mo.dead) { P.attackTarget = null; return; }
+    const mo = P.attackTarget; if (mo.dead) { P.attackTarget = null; return; } if (P.mounted) dismount('You hop off your horse to fight.');
     const d = dist(mo.x, mo.y, P.x, P.y); const reach = P.wpn.melee ? P.wpn.range + mo.size * 0.6 : P.wpn.range;
     if (d <= reach) { P.facing = Math.atan2(mo.y - P.y, mo.x - P.x); P.path = null;
       if (P.atkCd <= 0) { P.atkCd = 1 / (P.wpn.speed * P.aspd); P.atkAnim = 0.18; if (P.stealth) P.stealth = 0;
@@ -3506,6 +3727,9 @@ function render() {
   for (const mo of m.monsters) if (Math.abs(mo.x - P.x) < W && Math.abs(mo.y - P.y) < H) list.push({ y: mo.y, f: drawMonster, mo });
   for (const n of mapNpcs(m)) if (!n.hidden && Math.abs(n.x - P.x) < W && Math.abs(n.y - P.y) < H) list.push({ y: n.y, f: drawNpc, n });
   list.push({ y: P.y, f: drawPlayer });
+  if (G.pet && !G.pet.hidden && G.pet.map === m.id) list.push({ y: G.pet.kind === 'falcon' ? P.y + 400 : G.pet.y, f: drawPet });
+  if (G.comp && G.comp.map === m.id) list.push({ y: G.comp.y, f: drawComp });
+  if (G.falconMarks && G.falconMarks.length && G.pet && G.pet.kind === 'falcon') drawFalconMarks(now);
   list.sort((a, b) => a.y - b.y);
   const hov = G.started && !G.paused ? entityUnderMouse() : null; G.hover = hov;
   for (const it of list) it.f(it, now);
@@ -3522,6 +3746,7 @@ function render() {
   const bubbleFor = (e, yoff) => { if (!e.bubble) return; drawBubble(e.x, e.y - yoff, e.bubble.text); };
   for (const n of mapNpcs(m)) if (!n.hidden && n.bubble && Math.abs(n.x - P.x) < W / 2 + 50 && Math.abs(n.y - P.y) < H / 2 + 50) bubbleFor(n, 38);
   for (const mo of m.monsters) if (mo.bubble) bubbleFor(mo, mo.size + 40);
+  if (G.comp && G.comp.map === m.id && G.comp.bubble) bubbleFor(G.comp, 40);
   // labels
   ctx.font = '11px sans-serif';
   for (const dr of m.drops) { if (dr.gold) continue; const it = dr.item; const nm = it.kind === 'equip' ? it.name : ITEMS[it.id].name + (it.qty > 1 ? ' x' + it.qty : ''); const w = ctx.measureText(nm).width + 8; ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(dr.x - w / 2, dr.y - 26, w, 14); ctx.fillStyle = itemColor(it); ctx.fillText(nm, dr.x, dr.y - 15); }
@@ -3659,13 +3884,13 @@ function drawNpc(it, now) {
   if (n.hp < n.maxHp) { ctx.fillStyle = '#300'; ctx.fillRect(n.x - 14, n.y - 34, 28, 3); ctx.fillStyle = '#4c4'; ctx.fillRect(n.x - 14, n.y - 34, 28 * n.hp / n.maxHp, 3); }
 }
 function drawPlayer(it, now) {
-  const P = G.player; if (G.dead) { ctx.globalAlpha = 0.5; }
+  const P = G.player; if (P.mounted) { drawHorse(P, now); ctx.save(); ctx.translate(0, -15); } if (G.dead) { ctx.globalAlpha = 0.5; }
   const L = raceLook(P.race); const w = P.equip.weapon;
   if (P.channel) { const f = P.channel.t / P.channel.dur; ctx.strokeStyle = '#7fe3ff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(P.x, P.y - 4, 20, -Math.PI / 2, -Math.PI / 2 + f * Math.PI * 2); ctx.stroke(); ctx.lineWidth = 1; }
   ctx.strokeStyle = 'rgba(255,230,120,0.7)'; ctx.beginPath(); ctx.ellipse(P.x, P.y + 10, 12, 5, 0, 0, 7); ctx.stroke();
   const chanAnim = P.channel ? (Math.sin(now * 8) > 0.5 ? 0.12 : 0) : 0;
   drawPerson(P.x, P.y, Object.assign(L, { tunic: P.color, hair: '#4a3020', moving: P.moving, facing: P.facing, atk: P.atkAnim || chanAnim, weapon: true, weaponColor: w ? itemColor(w) : '#ccc', flash: P.hitFlash > 0, alpha: P.stealth ? 0.4 : 1, cape: P.cls !== 'adventurer' ? CLASSES[P.cls].color : null }), now);
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha = 1; if (P.mounted) ctx.restore();
 }
 const MON_DRAW = {
   toad(c, s, t) { ctx.beginPath(); ctx.ellipse(0, 2, s * 1.1, s * 0.75, 0, 0, 7); ctx.fill(); ctx.fillStyle = '#e8e0a0'; ctx.beginPath(); ctx.arc(-s * 0.4, -s * 0.5, 3, 0, 7); ctx.arc(s * 0.4, -s * 0.5, 3, 0, 7); ctx.fill(); },
@@ -3740,6 +3965,8 @@ function drawMinimap() {
   if (m.id === 'world') { c.font = 'bold 10px sans-serif'; c.textAlign = 'center';
     for (const p of Object.values(m.pois)) { if (!P.discovered[p.id]) continue; const [x, y] = toS(p.x, p.y); if (x < -5 || y < -5 || x > S + 5 || y > S + 5) continue; c.fillStyle = poiColor(p); c.fillText(poiIcon(p), x, y + 4); }
     for (const n of G.npcs) if (!n.hidden) { const [x, y] = toS(n.x / CFG.TILE, n.y / CFG.TILE); c.fillStyle = '#9cf'; c.fillRect(x - 1, y - 1, 2, 2); }
+    if (G.comp && G.comp.map === 'world') { const [x, y] = toS(G.comp.x / CFG.TILE, G.comp.y / CFG.TILE); c.fillStyle = '#7f7'; c.fillRect(x - 2, y - 2, 4, 4); }
+    for (const o of (G.pet && G.pet.kind === 'falcon' && G.falconMarks) || []) { const [x, y] = toS(o.x, o.y); c.fillStyle = o.kind === 'ore' ? '#ffd24a' : '#9f9'; c.fillRect(x - 1.5, y - 1.5, 3, 3); }
     for (const n of G.court || []) if (!n.hidden && n.map === 'world') { const [x, y] = toS(n.x / CFG.TILE, n.y / CFG.TILE); c.fillStyle = n.guard ? '#e66' : '#d9f'; c.fillRect(x - 1, y - 1, 2, 2); }
     for (const n of G.trainers) { const [x, y] = toS(n.x / CFG.TILE, n.y / CFG.TILE); c.fillStyle = '#ffd24a'; c.fillRect(x - 1.5, y - 1.5, 3, 3); } }
   for (const mo of m.monsters) if (!mo.dead && m.fog[m.idx(clamp(mo.x / CFG.TILE | 0, 0, m.w - 1), clamp(mo.y / CFG.TILE | 0, 0, m.h - 1))]) { const [x, y] = toS(mo.x / CFG.TILE, mo.y / CFG.TILE); c.fillStyle = mo.def.boss ? '#f0f' : '#f44'; c.fillRect(x - 1.5, y - 1.5, mo.def.boss ? 5 : 3, mo.def.boss ? 5 : 3); }
@@ -3801,6 +4028,31 @@ function drawCourtier(n, L, now) {
   if (mk) { ctx.fillStyle = mk === '?' ? '#7fff7f' : '#ffd24a'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center'; ctx.strokeStyle = '#000'; ctx.lineWidth = 3; const yy = n.y - 38 - Math.abs(Math.sin(now * 3)) * 4; ctx.strokeText(mk, n.x, yy); ctx.fillText(mk, n.x, yy); ctx.lineWidth = 1; }
   if (n.hp < n.maxHp) { ctx.fillStyle = '#300'; ctx.fillRect(n.x - 14, n.y - 34, 28, 3); ctx.fillStyle = '#4c4'; ctx.fillRect(n.x - 14, n.y - 34, 28 * n.hp / n.maxHp, 3); }
 }
+
+// ---------- v1.4: horse, pets, companion ----------
+function drawHorse(P, now) { const h = activeHorse(); if (!h) return; const x = P.x, y = P.y + 4, dir = Math.cos(P.facing || 0) < 0 ? -1 : 1, step = P.moving ? Math.sin(now * 14) * 3 : 0;
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(x, y + 10, 22, 5, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = shade(h.color, 0.8); ctx.fillRect(x - 14, y - 2 + step, 4, 13); ctx.fillRect(x + 10, y - 2 - step, 4, 13); ctx.fillStyle = h.color; ctx.fillRect(x - 10, y - 2 - step, 4, 13); ctx.fillRect(x + 6, y - 2 + step, 4, 13);
+  ctx.beginPath(); ctx.ellipse(x, y - 6, 18, 9, 0, 0, 7); ctx.fill(); ctx.beginPath(); ctx.moveTo(x + dir * 12, y - 10); ctx.lineTo(x + dir * 22, y - 24); ctx.lineTo(x + dir * 27, y - 20); ctx.lineTo(x + dir * 18, y - 4); ctx.fill();
+  ctx.fillStyle = shade(h.color, 0.55); ctx.beginPath(); ctx.moveTo(x + dir * 13, y - 13); ctx.lineTo(x + dir * 21, y - 26); ctx.lineTo(x + dir * 17, y - 12); ctx.fill(); ctx.fillRect(x - dir * 20, y - 8, 4 * dir, 10);
+  ctx.fillStyle = h.breed === 'destrier' ? '#8a1a2a' : '#6a3a1a'; ctx.fillRect(x - 7, y - 15, 14, 8); }
+function drawPet(it, now) { const b = G.pet; if (b.kind === 'falcon') { const wing = Math.sin(now * 12) * 6; ctx.fillStyle = 'rgba(0,0,0,0.15)'; ctx.beginPath(); ctx.ellipse(b.x, b.y + 46, 7, 3, 0, 0, 7); ctx.fill(); ctx.fillStyle = b.pet.color;
+    ctx.beginPath(); ctx.moveTo(b.x - 17, b.y - wing); ctx.lineTo(b.x, b.y + 4); ctx.lineTo(b.x + 17, b.y - wing); ctx.lineTo(b.x, b.y - 3); ctx.fill(); ctx.fillStyle = shade(b.pet.color, 0.6); ctx.fillRect(b.x - 2, b.y, 4, 7); ctx.fillStyle = '#e8e0c8'; ctx.beginPath(); ctx.arc(b.x, b.y - 2, 3, 0, 7); ctx.fill(); return; }
+  const x = b.x, y = b.y, dir = Math.cos(b.facing || 0) < 0 ? -1 : 1, step = b.moving ? Math.sin(now * 16) * 2 : 0; ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(x, y + 8, 11, 3, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = b.hitFlash > 0 ? '#fff' : b.pet.color; ctx.fillRect(x - 8, y + step, 3, 8); ctx.fillRect(x + 5, y - step, 3, 8); ctx.beginPath(); ctx.ellipse(x, y - 1, 11, 6, 0, 0, 7); ctx.fill(); ctx.beginPath(); ctx.arc(x + dir * 10, y - 7, 5, 0, 7); ctx.fill();
+  ctx.fillRect(x - dir * 13, y - 6, 4 * -dir, 3); ctx.fillStyle = '#222'; ctx.fillRect(x + dir * 14 - 1, y - 7, 2, 2);
+  if (b.atkAnim > 0) { b.atkAnim -= 0.016; ctx.strokeStyle = '#fff'; ctx.beginPath(); ctx.arc(x + dir * 16, y - 6, 6, -1, 1); ctx.stroke(); }
+  if (b.hp < b.maxHp) { ctx.fillStyle = '#300'; ctx.fillRect(x - 10, y - 18, 20, 3); ctx.fillStyle = '#4c4'; ctx.fillRect(x - 10, y - 18, 20 * b.hp / b.maxHp, 3); } }
+function drawComp(it, now) { const b = G.comp, c = b.comp, L = raceLook(c.race), w = c.equip.weapon;
+  ctx.strokeStyle = 'rgba(120,255,140,0.6)'; ctx.beginPath(); ctx.ellipse(b.x, b.y + 10, 11, 4, 0, 0, 7); ctx.stroke();
+  drawPerson(b.x, b.y, Object.assign(L, { tunic: c.color, hair: c.hair, moving: b.moving, facing: b.facing, atk: b.atkAnim || 0, weapon: true, weaponColor: w ? itemColor(w) : '#ccc', flash: b.hitFlash > 0, hat: c.equip.head ? itemColor(c.equip.head) : null }), now);
+  ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#000'; const ly = L.small ? 30 : 36; ctx.fillText(c.name.split(' ').pop(), b.x + 1, b.y - ly - 5); ctx.fillStyle = '#9f9'; ctx.fillText(c.name.split(' ').pop(), b.x, b.y - ly - 6);
+  ctx.fillStyle = '#300'; ctx.fillRect(b.x - 14, b.y - ly, 28, 3); ctx.fillStyle = '#4c4'; ctx.fillRect(b.x - 14, b.y - ly, 28 * Math.max(0, b.hp) / b.maxHp, 3);
+  if (c.order !== 'follow') { ctx.fillStyle = '#ffd24a'; ctx.fillText(c.order === 'stay' ? '⚓' : '⚔', b.x + 18, b.y - 30); } }
+function drawFalconMarks(now) { const TS = CFG.TILE, pulse = 0.5 + Math.sin(now * 3) * 0.25; ctx.lineWidth = 2;
+  for (const o of G.falconMarks) { const x = (o.x + 0.5) * TS, y = (o.y + 0.5) * TS; ctx.strokeStyle = o.kind === 'ore' ? `rgba(255,210,74,${pulse})` : `rgba(140,255,140,${pulse})`; ctx.beginPath(); ctx.ellipse(x, y + 8, 17, 8, 0, 0, 7); ctx.stroke();
+    ctx.fillStyle = ctx.strokeStyle; ctx.beginPath(); const yy = y - 26 - Math.abs(Math.sin(now * 3 + o.x)) * 4; ctx.moveTo(x, yy + 7); ctx.lineTo(x - 5, yy); ctx.lineTo(x + 5, yy); ctx.fill(); }
+  ctx.lineWidth = 1; }
 
 </script>
 </body></html>
